@@ -7,14 +7,16 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 FONT_PATH = "/System/Library/Fonts/HelveticaNeue.ttc"
-KNICKS_BLUE = np.array([70, 150, 255], np.float32)
-KNICKS_ORANGE = np.array([255, 150, 45], np.float32)
+SPIRE_BLUE = np.array([95, 165, 255], np.float32)   # bright glowing spire
+SHAFT_BLUE = np.array([48, 92, 245], np.float32)    # deep royal main shaft (matches photo)
+KNICKS_ORANGE = np.array([255, 140, 40], np.float32)  # amber crown
 GREEN = np.array([30, 200, 70], np.float32)
 EDGE = np.array([225, 240, 255], np.float32)   # bright construction front
 
-# Empire State Building half-width profile (yn: 0=spire tip .. 1=base), in cells
-PROF_Y = np.array([0.00, 0.17, 0.21, 0.34, 0.40, 0.50, 0.80, 0.86, 1.00])
-PROF_W = np.array([0.40, 0.40, 1.60, 2.40, 4.60, 4.90, 6.20, 8.20, 9.20])
+# Empire State Building half-width profile (yn: 0=spire tip .. 1=base), in cells.
+# Shaft stays constant width down to the base (no flare) so bottom rows match the middle.
+PROF_Y = np.array([0.00, 0.17, 0.21, 0.34, 0.40, 0.50, 1.00])
+PROF_W = np.array([0.40, 0.40, 1.60, 2.40, 4.60, 5.00, 5.00])
 
 
 def build_atlas(cell, font_size, chars):
@@ -83,6 +85,8 @@ def main():
     ap.add_argument("--glow", type=float, default=1.1)
     ap.add_argument("--glowradius", type=float, default=15.0)
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
+    ap.add_argument("--basey", type=float, default=0.72, help="skyline horizon (fraction of H) where the base sits")
+    ap.add_argument("--wscale", type=float, default=0.60, help="building width scale (slimmer = more distant)")
     args = ap.parse_args()
 
     fps = eval(args.fps) if "/" in str(args.fps) else float(args.fps)
@@ -133,9 +137,10 @@ def main():
         # ---- the constructed Empire State Building ----
         center = cxs[n] / cell                      # building center column (cells)
         tip = tys[n] / cell                         # spire tip row (cells)
-        BH = max(gh - tip, 8.0)                     # building spans tip -> frame bottom
+        base_row = args.basey * H / cell            # skyline horizon row (cells)
+        BH = max(base_row - tip, 6.0)               # building sits tip -> skyline (behind freeway)
         yn = (rows - tip) / BH                       # 0 at tip, 1 at base (per grid row)
-        hw = np.interp(yn[:, 0], PROF_Y, PROF_W)[:, None]   # half-width per row (cells)
+        hw = (np.interp(yn[:, 0], PROF_Y, PROF_W) * args.wscale)[:, None]   # half-width (cells)
         inside = (yn >= 0) & (yn <= 1) & (np.abs(cols + 0.5 - center) <= hw)
 
         front = np.clip(t / args.buildsecs, 0, 1)    # build-out grows downward
@@ -146,8 +151,10 @@ def main():
         Ib = np.where(grown, np.clip(0.95 * shimmer + 0.6 * edge, 0, 1.3), 0.0)
         # Knicks bands exactly like the photo: BLUE antenna+spire, ORANGE crown,
         # BLUE main shaft + base
-        orange_band = (yn >= 0.40) & (yn < 0.52)
-        Cb = np.where(orange_band[..., None], KNICKS_ORANGE, KNICKS_BLUE)
+        orange_band = (yn >= 0.40) & (yn < 0.59)
+        shaft_band = (yn >= 0.59)
+        Cb = np.where(shaft_band[..., None], SHAFT_BLUE, SPIRE_BLUE)        # deep blue shaft, bright spire
+        Cb = np.where(orange_band[..., None], KNICKS_ORANGE, Cb)           # amber crown
         Cb = Cb * (1 - edge[..., None]) + EDGE * edge[..., None]
 
         # building overrides the scene where it is drawn
