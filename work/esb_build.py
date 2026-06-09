@@ -2,11 +2,23 @@
 """Construct the Empire State Building out of LGK characters, anchored to the real
 spire visible in the footage, extending the full building downward over the video.
 Knicks blue/orange bands, glow, and a top-to-bottom build-out animation."""
-import argparse, subprocess, sys
+import argparse, subprocess, sys, math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 import os
+
+
+def find_coeffs(dst, src):
+    """Perspective coefficients for PIL Image.transform that place the four `src`
+    corners (in the source image) at the four `dst` corners (in the output frame)."""
+    A = []
+    for (xd, yd), (xs, ys) in zip(dst, src):
+        A.append([xd, yd, 1, 0, 0, 0, -xs * xd, -xs * yd])
+        A.append([0, 0, 0, xd, yd, 1, -ys * xd, -ys * yd])
+    res = np.linalg.solve(np.array(A, np.float64),
+                          np.array(src, np.float64).reshape(8))
+    return res
 FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "CourierPrime-Regular.ttf")
 SPIRE_BLUE = np.array([95, 165, 255], np.float32)   # bright glowing spire
 SHAFT_BLUE = np.array([48, 92, 245], np.float32)    # deep royal main shaft (matches photo)
@@ -93,11 +105,7 @@ def make_logo_layer(canvas_W, logo_path, target_w, cell, chars):
             ch = chars[int(rng.integers(0, len(chars)))]
             d.text((c * cell, r * cell), ch, font=fnt, fill=tuple(int(x) for x in col))
 
-    layer = np.zeros((outH, canvas_W, 3), np.float32)
-    px = max(0, (canvas_W - outW) // 2)
-    src = np.asarray(img, np.float32)[:, :min(outW, canvas_W)]
-    layer[:, px:px + src.shape[1]] = src
-    return layer
+    return np.asarray(img, np.float32), outW, outH
 
 
 def read_frames(path, W, H):
@@ -156,10 +164,22 @@ def main():
     ap.add_argument("--basey", type=float, default=0.72, help="skyline horizon (fraction of H) where the base sits")
     ap.add_argument("--wscale", type=float, default=0.60, help="building width scale (slimmer = more distant)")
     ap.add_argument("--logo", default=os.path.join(os.path.dirname(__file__), "knicks_logo.png"))
-    ap.add_argument("--logow", type=int, default=660, help="Knicks logo width in px")
+    ap.add_argument("--logow", type=int, default=600, help="Knicks crest on-screen width in px (bottom edge)")
     ap.add_argument("--logocell", type=int, default=12, help="character size in the logo")
-    ap.add_argument("--logoy", type=float, default=0.02, help="logo vertical position (fraction of H)")
-    ap.add_argument("--logoglow", type=float, default=1.5, help="glow/bloom strength on the logo")
+    ap.add_argument("--logox", type=float, default=0.58, help="crest center x (fraction of W)")
+    ap.add_argument("--logoy", type=float, default=0.24, help="crest center y (fraction of H)")
+    ap.add_argument("--logoglow", type=float, default=1.6, help="glow/bloom strength on the logo")
+    # ---- the crest floats in PERSPECTIVE (foreshortened, tilted) and glows with a
+    #      majestic, elegant cyber radiance that wells up from behind the skyline ----
+    ap.add_argument("--tilt", type=float, default=0.64, help="vertical foreshortening of the crest (1=flat-on, smaller=more edge-on)")
+    ap.add_argument("--keystone", type=float, default=0.86, help="far (top) edge width fraction — perspective recede")
+    ap.add_argument("--rot", type=float, default=-9.0, help="in-plane tilt of the crest, degrees")
+    ap.add_argument("--aura", type=float, default=1.0, help="strength of the soft cyber glow around the crest")
+    ap.add_argument("--rayglow", type=float, default=0.9, help="strength of the radiance welling up from behind the buildings")
+    ap.add_argument("--originx", type=float, default=0.50, help="hidden glow origin x, behind the skyline (fraction of W)")
+    ap.add_argument("--originy", type=float, default=0.82, help="hidden glow origin y, below the skyline (fraction of H)")
+    ap.add_argument("--rayreach", type=float, default=0.62, help="how far the radiance reaches up the sky (fraction of H)")
+    ap.add_argument("--conew", type=float, default=0.72, help="angular width of the radiance fan, radians")
     args = ap.parse_args()
 
     fps = eval(args.fps) if "/" in str(args.fps) else float(args.fps)
@@ -188,9 +208,74 @@ def main():
     rows = np.arange(gh)[:, None].astype(np.float32)
     cols = np.arange(gw)[None, :].astype(np.float32)
 
-    text_arr = make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars)
-    TH = text_arr.shape[0]
-    ty = int(args.logoy * H)
+    emb, eW, eH = make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars)
+
+    # ---- the crest in PERSPECTIVE (foreshortened, tilted), wreathed in an elegant
+    #      cyber glow, with a soft radiance welling up from behind the skyline.
+    #      Layers precomputed once and animated per frame. ----
+    CYBER = np.array([120, 195, 255], np.float32)         # cool electric cyber glow
+    ecx, ecy = args.logox * W, args.logoy * H             # crest center on screen
+    Wp = float(args.logow)                                # on-screen width (near/bottom edge)
+    Hp = Wp * (eH / eW) * args.tilt                       # vertical foreshortening
+    tf = args.keystone                                    # top edge recedes (perspective)
+    rot = math.radians(args.rot)
+    cr, srot = math.cos(rot), math.sin(rot)
+    # local crest corners (TL, TR, BR, BL), centered, keystoned + squashed, then rotated
+    local = [(-Wp / 2 * tf, -Hp / 2), (Wp / 2 * tf, -Hp / 2), (Wp / 2, Hp / 2), (-Wp / 2, Hp / 2)]
+    emb_quad = [(ecx + x * cr - y * srot, ecy + x * srot + y * cr) for x, y in local]
+    src_quad = [(0, 0), (eW, 0), (eW, eH), (0, eH)]
+
+    emb_img = Image.fromarray(np.clip(emb, 0, 255).astype(np.uint8))
+    coeffs = find_coeffs(emb_quad, src_quad)
+    emblem_proj = np.asarray(emb_img.transform((W, H), Image.PERSPECTIVE, coeffs,
+                                               resample=Image.BILINEAR), np.float32)
+
+    # confine the crest to a soft oval so its glow stays organic (no warped-rectangle edges)
+    GS = 256
+    gyy, gxx = np.mgrid[0:GS, 0:GS]
+    grr = np.sqrt(((gxx - GS / 2) / (GS / 2)) ** 2 + ((gyy - GS / 2) / (GS / 2)) ** 2).astype(np.float32)
+    ofill = np.clip((1.06 - grr) / 0.16, 0, 1)
+    s = 1.30
+    omask_quad = [(ecx + (x - ecx) * s, ecy + (y - ecy) * s) for x, y in emb_quad]
+    ocoeffs = find_coeffs(omask_quad, [(0, 0), (GS, 0), (GS, GS), (0, GS)])
+    omask = np.asarray(Image.fromarray((ofill * 255).astype(np.uint8)).transform(
+        (W, H), Image.PERSPECTIVE, ocoeffs, resample=Image.BILINEAR), np.float32) / 255.0
+    emblem_proj = emblem_proj * omask[..., None]
+
+    # majestic, elegant cyber glow: layered blooms. The near blooms carry the crest's
+    # own Knicks colour; the wide blooms are recast as a cool cyber halo so the whole
+    # thing reads as an electric, diffuse radiance rather than a literal light.
+    ei = Image.fromarray(np.clip(emblem_proj, 0, 255).astype(np.uint8))
+    emb_near = (np.asarray(ei.filter(ImageFilter.GaussianBlur(7)), np.float32) * 1.15
+                + np.asarray(ei.filter(ImageFilter.GaussianBlur(19)), np.float32) * 0.70) * args.logoglow
+    wide = np.asarray(ei.filter(ImageFilter.GaussianBlur(52)), np.float32)
+    huge = np.asarray(ei.filter(ImageFilter.GaussianBlur(104)), np.float32)
+    widel = 0.299 * wide[..., 0] + 0.587 * wide[..., 1] + 0.114 * wide[..., 2]
+    hugel = 0.299 * huge[..., 0] + 0.587 * huge[..., 1] + 0.114 * huge[..., 2]
+    aura_layer = (widel[..., None] * 3.0 + hugel[..., None] * 4.5) * (CYBER / 255.0) * args.aura
+    aura_layer = aura_layer * (1 - 0.55 * omask[..., None])   # halo AROUND the crest; let its colour read
+
+    # radiance welling up from BEHIND the skyline — a soft, sourceless fan whose origin
+    # is hidden below/behind the buildings. Broad cone + faint god-ray striations,
+    # masked to emerge only above the horizon so no point source is ever seen.
+    Yg, Xg = np.mgrid[0:H, 0:W]
+    Xf, Yf = Xg.astype(np.float32), Yg.astype(np.float32)
+    ox, oy = args.originx * W, args.originy * H
+    axx, ayy = ecx - ox, ecy - oy
+    La = math.hypot(axx, ayy)
+    axu, ayu = axx / La, ayy / La                          # axis: hidden origin -> crest
+    vx, vy = Xf - ox, Yf - oy
+    dist = np.sqrt(vx * vx + vy * vy)
+    dotp = (vx * axu + vy * ayu) / np.maximum(dist, 1.0)   # cos(angle from axis)
+    ang = np.arccos(np.clip(dotp, -1.0, 1.0))
+    cone = np.exp(-(ang / args.conew) ** 2)                # broad upward fan
+    rad = np.exp(-dist / (args.rayreach * H))              # fades up into the sky
+    rays = np.clip(1.0 + 0.18 * np.sin(ang * 11.0), 0, 2)  # faint volumetric striations
+    horizon = args.basey * H
+    emerge = np.clip((horizon - Yf) / (0.11 * H), 0, 1)    # 0 at/below skyline, hides the origin
+    topfade = np.clip(Yf / (0.05 * H), 0, 1)               # soft at the very top edge
+    radiance = rad * cone * rays * np.clip(dotp, 0, 1) * emerge * topfade
+    ray_layer = radiance[..., None] * CYBER * args.rayglow
 
     writer = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -268,17 +353,21 @@ def main():
         glow = np.asarray(cimg.filter(ImageFilter.GaussianBlur(args.glowradius)), np.float32) * args.glow
         out_f = base + char + glow
 
-        # ---- payoff text: "LET'S GO KNICKS" rises into the sky after the build ----
-        tstart = args.buildsecs + 0.45
-        fade = float(np.clip((t - tstart) / 0.7, 0, 1))
-        if fade > 0:
-            pulse = 0.85 + 0.15 * np.sin(2 * np.pi * 1.0 * (t - tstart))
-            tl = text_arr * (fade * pulse)
-            ti = Image.fromarray(np.clip(tl, 0, 255).astype(np.uint8))
-            gl = args.logoglow
-            g1 = np.asarray(ti.filter(ImageFilter.GaussianBlur(11)), np.float32) * (1.15 * gl)
-            g2 = np.asarray(ti.filter(ImageFilter.GaussianBlur(30)), np.float32) * (0.65 * gl)  # wide bloom
-            out_f[ty:ty + TH] += tl * 1.25 + g1 + g2
+        # ---- once the building is built, the cyber radiance wells up from behind the
+        #      skyline and the Knicks crest resolves within it, glowing majestically.
+        #      Everything eases in gracefully and holds with a slow, elegant breath. ----
+        sigstart = args.buildsecs + 0.30
+        te = t - sigstart
+        if te >= 0:
+            on = float(np.clip(te / 0.60, 0, 1)); on = on * on * (3 - 2 * on)  # graceful ease-in
+            swell = 1 + 0.20 * float(np.exp(-te / 0.5))                        # soft majestic swell, settles
+            breathe = 1 + 0.05 * float(np.sin(2 * np.pi * 0.40 * te))          # slow elegant breathing
+            occl = 1.0 - 0.85 * np.clip(lum / 120.0, 0, 1)                     # the city occludes the glow behind it
+            out_f += ray_layer * (occl[..., None] * (on * swell * breathe))    # radiance from behind the buildings
+            out_f += aura_layer * (on * breathe)                               # cyber halo
+
+            ef = float(np.clip((te - 0.12) / 0.65, 0, 1)); ef = ef * ef * (3 - 2 * ef)
+            out_f += (emblem_proj * 1.25 + emb_near) * (ef * breathe)          # crest resolves into the glow
 
         out = np.clip(out_f, 0, 255).astype(np.uint8)
         writer.stdin.write(out.tobytes())
