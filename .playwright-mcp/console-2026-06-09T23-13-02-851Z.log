@@ -1,0 +1,7 @@
+[     819ms] TypeError: warped0.remove is not a function
+    at rebuildSignal (http://localhost:8123/p5/sketch.js:220:62)
+    at setup (http://localhost:8123/p5/sketch.js:83:3)
+    at _setup (https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js:2:464891)
+    at _runIfPreloadsAreDone (https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js:2:463944)
+    at g._decrementPreload (https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js:2:464149)
+    at https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js:2:655764
