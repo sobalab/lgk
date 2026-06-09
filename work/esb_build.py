@@ -29,9 +29,10 @@ ELECTRIC = np.array([90, 225, 255], np.float32)      # electric cyan spark
 EDGE = np.array([225, 240, 255], np.float32)   # bright construction front
 
 # Empire State Building half-width profile (yn: 0=spire tip .. 1=base), in cells.
-# Shaft stays constant width down to the base (no flare) so bottom rows match the middle.
-PROF_Y = np.array([0.00, 0.17, 0.21, 0.34, 0.40, 0.50, 1.00])
-PROF_W = np.array([0.40, 0.40, 1.60, 2.40, 4.60, 5.00, 5.00])
+# Thin spire, a SHORT stepped crown, then a tall CONSTANT-width rectangular shaft
+# (the rectangle is ~75% of the height so it clearly reads as a rectangle).
+PROF_Y = np.array([0.00, 0.10, 0.13, 0.17, 0.21, 0.25, 1.00])
+PROF_W = np.array([0.24, 0.24, 1.20, 2.60, 3.80, 4.40, 4.40])
 
 
 def build_atlas(cell, font_size, chars):
@@ -173,7 +174,9 @@ def main():
     ap.add_argument("--glowradius", type=float, default=15.0)
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
     ap.add_argument("--basey", type=float, default=0.72, help="skyline horizon (fraction of H) where the base sits")
-    ap.add_argument("--wscale", type=float, default=0.60, help="building width scale (slimmer = more distant)")
+    ap.add_argument("--wscale", type=float, default=0.82, help="building width scale (slimmer = more distant)")
+    ap.add_argument("--esbdepth", type=float, default=0.9, help="depth of the building's 3D side face (cells, x half-width)")
+    ap.add_argument("--esbshear", type=float, default=0.15, help="how much the 3D side face shears up as it recedes")
     ap.add_argument("--logo", default=os.path.join(os.path.dirname(__file__), "knicks_logo.png"))
     ap.add_argument("--logow", type=int, default=470, help="Knicks crest on-screen width in px (near edge)")
     ap.add_argument("--logocell", type=int, default=10, help="character size in the logo")
@@ -374,29 +377,43 @@ def main():
         C = np.where(spark[..., None], ELECTRIC, C)
         I = np.where(spark, np.maximum(I, 1.15), I)
 
-        # ---- the constructed Empire State Building ----
+        # ---- the Empire State Building as a 3D extruded model: a lit FRONT face + a
+        #      shaded, sheared right SIDE face with a bright vertical corner edge ----
         center = cxs[n] / cell                      # building center column (cells)
         tip = tys[n] / cell                         # spire tip row (cells)
         base_row = args.basey * H / cell            # skyline horizon row (cells)
         BH = max(base_row - tip, 6.0)               # building sits tip -> skyline (behind freeway)
-        yn = (rows - tip) / BH                       # 0 at tip, 1 at base (per grid row)
-        hw = (np.interp(yn[:, 0], PROF_Y, PROF_W) * args.wscale)[:, None]   # half-width (cells)
-        inside = (yn >= 0) & (yn <= 1) & (np.abs(cols + 0.5 - center) <= hw)
-
         front = np.clip(t / args.buildsecs, 0, 1)    # build-out grows downward
-        grown = inside & (yn <= front)
+
+        ub = np.broadcast_to(cols + 0.5 - center, (gh, gw))   # signed offset from the axis
+        ynF = (rows - tip) / BH                               # (gh,1) front-face row coord
+        hwF = (np.interp(np.clip(ynF[:, 0], 0, 1), PROF_Y, PROF_W) * args.wscale)[:, None]
+        rowvalid = (ynF >= 0) & (ynF <= 1) & (ynF <= front)
+        front_face = rowvalid & (np.abs(ub) <= hwF)
+        s = ub - hwF                                          # depth into the right side (cells)
+        depth = np.maximum(1.0, args.esbdepth * hwF)
+        ynS = (rows + s * args.esbshear - tip) / BH           # side recedes up-right
+        side_face = (ub > hwF) & (s <= depth) & (ynS >= 0) & (ynS <= 1) & (ynS <= front)
+        face = front_face | side_face
+        yn = np.where(side_face, ynS, ynF)                    # band/shimmer source coord per cell
+
+        # face shading: front lit (brighter left, bright corner), side in shadow
+        un = ub / np.maximum(hwF, 0.5)
+        shadeF = 0.86 + 0.14 * (0.5 - 0.5 * un)
+        shadeF = np.where(np.abs(un) > 0.82, np.maximum(shadeF, 1.18), shadeF)   # crisp rectangle edges
+        shadeS = 0.5 - 0.18 * np.clip(s / depth, 0, 1)
+        shade = np.where(side_face, shadeS, shadeF)
+
         shimmer = 0.80 + 0.20 * np.sin(2 * np.pi * (t * 1.4) - yn * 6 + cols * 0.25)
         edge = np.clip(1 - np.abs(yn - front) / 0.05, 0, 1) * (front < 1)   # bright growing front
-
-        Ib = np.where(grown, np.clip(0.95 * shimmer + 0.6 * edge, 0, 1.3), 0.0)
-        # Knicks bands exactly like the photo: BLUE antenna+spire, ORANGE crown,
-        # BLUE main shaft + base
+        Ib = np.where(face, np.clip(0.95 * shimmer + 0.6 * edge, 0, 1.3) * shade, 0.0)
+        # Knicks bands: BLUE antenna+spire, ORANGE crown, BLUE main shaft + base
         orange_band = (yn >= 0.40) & (yn < 0.59)
         shaft_band = (yn >= 0.59)
-        shaft_t = np.clip((yn - 0.59) / (1 - 0.59), 0, 1)                  # 0 at shaft top, 1 at base
-        shaft_col = SHAFT_BLUE * (1 - 0.6 * shaft_t)[..., None]            # darken/fade toward the bottom
-        Cb = np.where(shaft_band[..., None], shaft_col, SPIRE_BLUE)        # deep blue shaft, bright spire
-        Cb = np.where(orange_band[..., None], KNICKS_ORANGE, Cb)           # amber crown
+        shaft_t = np.clip((yn - 0.59) / (1 - 0.59), 0, 1)
+        shaft_col = SHAFT_BLUE * (1 - 0.6 * shaft_t)[..., None]
+        Cb = np.where(shaft_band[..., None], shaft_col, SPIRE_BLUE)
+        Cb = np.where(orange_band[..., None], KNICKS_ORANGE, Cb)
         Cb = Cb * (1 - edge[..., None]) + EDGE * edge[..., None]
 
         # ---- payoff: completion flash + heartbeat once the building is fully built ----
@@ -408,7 +425,7 @@ def main():
             Cb = Cb * (1 - 0.5 * flash) + EDGE * (0.5 * flash)             # whiten at the peak
 
         # building overrides the scene where it is drawn
-        use_b = grown & (Ib > I)
+        use_b = face & (Ib > I)
         I = np.where(use_b, Ib, I)
         C = np.where(use_b[..., None], Cb, C)
 

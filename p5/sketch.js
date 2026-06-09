@@ -16,8 +16,10 @@ const SPIRE_BLUE = [95, 165, 255], SHAFT_BLUE = [48, 92, 245], KNICKS_ORANGE = [
 const GREEN = [30, 200, 70], GREEN_HEAD = [205, 255, 215], ELECTRIC = [90, 225, 255];
 const EDGE = [225, 240, 255], CYBER = [90, 205, 255];
 const LOGO_ORANGE = [255, 120, 12], LOGO_BLUE = [22, 110, 255], LOGO_GRAY = [195, 205, 222];
-const PROF_Y = [0, 0.17, 0.21, 0.34, 0.40, 0.50, 1.0];
-const PROF_W = [0.40, 0.40, 1.60, 2.40, 4.60, 5.0, 5.0];
+// thin spire, a SHORT stepped crown, then a tall CONSTANT-width rectangular shaft
+// (the rectangle is ~75% of the height so it clearly reads as a rectangle)
+const PROF_Y = [0, 0.10, 0.13, 0.17, 0.21, 0.25, 1.0];
+const PROF_W = [0.24, 0.24, 1.20, 2.60, 3.80, 4.40, 4.40];
 
 // ---------- tweakable params (same names/defaults as the CLI flags) ----------
 const P = {
@@ -26,7 +28,7 @@ const P = {
   lights: 0.6, lightglow: 1.7, lightthr: 0.20,
   noiseamt: 0.38, spark: 0.0045,
   glow: 1.1, glowradius: 15.0,
-  buildsecs: 2.0, basey: 0.72, wscale: 0.60,
+  buildsecs: 2.0, basey: 0.72, wscale: 0.82, esbdepth: 0.9, esbshear: 0.15,
   logow: 470, logocell: 10, logox: 0.65, logoy: 0.31, logoglow: 2.2,
   tilt: 0.78, recede: 0.58, rot: 5.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
   aura: 0.55, rayglow: 0.4, originx: 0.52, originy: 0.66, rayreach: 0.55, conew: 0.62,
@@ -302,20 +304,37 @@ function draw() {
       else if (rainb > 0.04 && hsel > 0.996) { cr0 = SPIRE_BLUE[0]; cg0 = SPIRE_BLUE[1]; cb0 = SPIRE_BLUE[2]; I = Math.max(I, 0.9); }
       // electric sparks
       if (I > 0.03 && hash3(5000 + etick, r, c) < P.spark) { cr0 = ELECTRIC[0]; cg0 = ELECTRIC[1]; cb0 = ELECTRIC[2]; I = Math.max(I, 1.15); }
-      // ESB
-      const yn = (r - tip) / BH;
-      if (yn >= 0 && yn <= 1 && yn <= front) {
-        const hw = interpProfile(yn) * P.wscale;
-        if (Math.abs(c + 0.5 - center) <= hw) {
-          const shimmer = 0.80 + 0.20 * Math.sin(2 * Math.PI * (t * 1.4) - yn * 6 + c * 0.25);
-          const edge = front < 1 ? clamp(1 - Math.abs(yn - front) / 0.05, 0, 1) : 0;
+      // ---- ESB as a 3D extruded model: a lit FRONT face + a shaded, sheared right
+      //      SIDE face, with a bright vertical corner edge between them ----
+      {
+        const u = c + 0.5 - center;                        // signed offset from the building axis
+        const ynF = (r - tip) / BH;
+        const hwF = (ynF >= 0 && ynF <= 1) ? interpProfile(ynF) * P.wscale : -1;
+        let face = 0, ynU = ynF, shade = 1;
+        if (hwF >= 0 && ynF <= front && u >= -hwF && u <= hwF) {
+          face = 1; ynU = ynF;                             // front face
+        } else if (hwF >= 0 && u > hwF) {                  // right side face (recedes up-right)
+          const s = u - hwF, depth = Math.max(1.0, P.esbdepth * hwF);
+          if (s <= depth) {
+            const ynS = (r + s * P.esbshear - tip) / BH;
+            if (ynS >= 0 && ynS <= 1 && ynS <= front) { face = 2; ynU = ynS; shade = 0.5 - 0.18 * (s / depth); }
+          }
+        }
+        if (face) {
+          const shimmer = 0.80 + 0.20 * Math.sin(2 * Math.PI * (t * 1.4) - ynU * 6 + c * 0.25);
+          const edge = front < 1 ? clamp(1 - Math.abs(ynU - front) / 0.05, 0, 1) : 0;
           let Ib = clamp(0.95 * shimmer + 0.6 * edge, 0, 1.3);
-          // bands
           let bcol;
-          if (yn >= 0.59) { const st = clamp((yn - 0.59) / 0.41, 0, 1); bcol = [SHAFT_BLUE[0] * (1 - 0.6 * st), SHAFT_BLUE[1] * (1 - 0.6 * st), SHAFT_BLUE[2] * (1 - 0.6 * st)]; }
-          else if (yn >= 0.40) bcol = KNICKS_ORANGE.slice();
+          if (ynU >= 0.59) { const st = clamp((ynU - 0.59) / 0.41, 0, 1); bcol = [SHAFT_BLUE[0] * (1 - 0.6 * st), SHAFT_BLUE[1] * (1 - 0.6 * st), SHAFT_BLUE[2] * (1 - 0.6 * st)]; }
+          else if (ynU >= 0.40) bcol = KNICKS_ORANGE.slice();
           else bcol = SPIRE_BLUE.slice();
           bcol = [bcol[0] * (1 - edge) + EDGE[0] * edge, bcol[1] * (1 - edge) + EDGE[1] * edge, bcol[2] * (1 - edge) + EDGE[2] * edge];
+          if (face === 1) {                                // flat-lit front + crisp vertical edges
+            const un = clamp(u / Math.max(hwF, 0.5), -1, 1);
+            shade = 0.86 + 0.14 * (0.5 - 0.5 * un);
+            if (Math.abs(un) > 0.82) shade = Math.max(shade, 1.18);   // both rectangle edges
+          }
+          Ib *= shade;
           if (built) { Ib *= beat; bcol = [bcol[0] * (1 - 0.5 * flash) + EDGE[0] * 0.5 * flash, bcol[1] * (1 - 0.5 * flash) + EDGE[1] * 0.5 * flash, bcol[2] * (1 - 0.5 * flash) + EDGE[2] * 0.5 * flash]; }
           if (Ib > I) { I = Ib; cr0 = bcol[0]; cg0 = bcol[1]; cb0 = bcol[2]; }
         }
@@ -388,6 +407,7 @@ function buildPanel() {
     ['logoglow', 0.5, 4, 0.1], ['rayglow', 0, 1.2, 0.02], ['aura', 0, 1.5, 0.02],
     ['rot', -40, 40, 1], ['recede', 0.2, 1, 0.02], ['tilt', 0.3, 1, 0.02],
     ['logox', 0.2, 0.9, 0.01], ['logoy', 0.1, 0.6, 0.01], ['logow', 120, 600, 10], ['fadeperiod', 0.8, 5, 0.1],
+    ['esbdepth', 0, 1.5, 0.05], ['esbshear', -1, 1, 0.05], ['wscale', 0.3, 1.2, 0.02],
   ];
   for (const [key, mn, mx, st] of specs) {
     const lab = createElement('label'); lab.parent(panel);
