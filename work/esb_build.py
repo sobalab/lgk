@@ -6,7 +6,8 @@ import argparse, subprocess, sys
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
-FONT_PATH = "/System/Library/Fonts/HelveticaNeue.ttc"
+import os
+FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "CourierPrime-Regular.ttf")
 SPIRE_BLUE = np.array([95, 165, 255], np.float32)   # bright glowing spire
 SHAFT_BLUE = np.array([48, 92, 245], np.float32)    # deep royal main shaft (matches photo)
 KNICKS_ORANGE = np.array([255, 140, 40], np.float32)  # amber crown
