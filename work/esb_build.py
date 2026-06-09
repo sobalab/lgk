@@ -24,6 +24,7 @@ SPIRE_BLUE = np.array([95, 165, 255], np.float32)   # bright glowing spire
 SHAFT_BLUE = np.array([48, 92, 245], np.float32)    # deep royal main shaft (matches photo)
 KNICKS_ORANGE = np.array([255, 140, 40], np.float32)  # amber crown
 GREEN = np.array([30, 200, 70], np.float32)
+GREEN_HEAD = np.array([205, 255, 215], np.float32)   # white-hot leading glyph of a rain stream
 EDGE = np.array([225, 240, 255], np.float32)   # bright construction front
 
 # Empire State Building half-width profile (yn: 0=spire tip .. 1=base), in cells.
@@ -158,6 +159,8 @@ def main():
     ap.add_argument("--basevis", type=float, default=0.5)
     ap.add_argument("--greentint", type=float, default=0.5)
     ap.add_argument("--scene", type=float, default=0.35, help="subtle LGK on the rest of the scene")
+    ap.add_argument("--rain", type=float, default=0.85, help="strength of the falling digital rain")
+    ap.add_argument("--flicker", type=float, default=12.0, help="per-cell digit flicker rate (changes/sec)")
     ap.add_argument("--glow", type=float, default=1.1)
     ap.add_argument("--glowradius", type=float, default=15.0)
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
@@ -166,18 +169,18 @@ def main():
     ap.add_argument("--logo", default=os.path.join(os.path.dirname(__file__), "knicks_logo.png"))
     ap.add_argument("--logow", type=int, default=600, help="Knicks crest on-screen width in px (bottom edge)")
     ap.add_argument("--logocell", type=int, default=12, help="character size in the logo")
-    ap.add_argument("--logox", type=float, default=0.58, help="crest center x (fraction of W)")
-    ap.add_argument("--logoy", type=float, default=0.24, help="crest center y (fraction of H)")
+    ap.add_argument("--logox", type=float, default=0.50, help="crest center x (fraction of W)")
+    ap.add_argument("--logoy", type=float, default=0.21, help="crest center y (fraction of H)")
     ap.add_argument("--logoglow", type=float, default=1.6, help="glow/bloom strength on the logo")
     # ---- the crest floats in PERSPECTIVE (foreshortened, tilted) and glows with a
     #      majestic, elegant cyber radiance that wells up from behind the skyline ----
     ap.add_argument("--tilt", type=float, default=0.64, help="vertical foreshortening of the crest (1=flat-on, smaller=more edge-on)")
     ap.add_argument("--keystone", type=float, default=0.86, help="far (top) edge width fraction — perspective recede")
-    ap.add_argument("--rot", type=float, default=-9.0, help="in-plane tilt of the crest, degrees")
+    ap.add_argument("--rot", type=float, default=0.0, help="in-plane tilt of the crest, degrees")
     ap.add_argument("--aura", type=float, default=1.0, help="strength of the soft cyber glow around the crest")
     ap.add_argument("--rayglow", type=float, default=0.9, help="strength of the radiance welling up from behind the buildings")
     ap.add_argument("--originx", type=float, default=0.50, help="hidden glow origin x, behind the skyline (fraction of W)")
-    ap.add_argument("--originy", type=float, default=0.82, help="hidden glow origin y, below the skyline (fraction of H)")
+    ap.add_argument("--originy", type=float, default=0.66, help="hidden glow origin y, in the skyline behind the buildings (fraction of H)")
     ap.add_argument("--rayreach", type=float, default=0.62, help="how far the radiance reaches up the sky (fraction of H)")
     ap.add_argument("--conew", type=float, default=0.72, help="angular width of the radiance fan, radians")
     args = ap.parse_args()
@@ -193,6 +196,16 @@ def main():
     rng = np.random.default_rng(7)
     randfield = rng.integers(0, N, size=(RF, gw))
 
+    # per-column rain: each column falls at its own speed, so cells both fall and
+    # flicker (the field scrolls past them), like the reference's binary rain
+    rrng = np.random.default_rng(11)
+    rspeed = rrng.uniform(8.0, 22.0, gw).astype(np.float32)            # rows/sec
+    rtail = rrng.uniform(6.0, 18.0, gw).astype(np.float32)             # streak length
+    rperiod = (gh + rtail + rrng.uniform(4.0, 30.0, gw)).astype(np.float32)
+    rphase = (rrng.uniform(0, 1, gw) * rperiod).astype(np.float32)
+    rowsg = np.arange(gh)[:, None].astype(np.float32)
+    colidx = np.arange(gw)[None, :]
+
     # ---- pass A: track the spire anchor across the clip ----
     cxs, tys = [], []
     last = (args.width * 0.37, args.height * 0.44)
@@ -203,6 +216,7 @@ def main():
         last = a
         cxs.append(a[0]); tys.append(a[1])
     cxs = smooth(cxs, 13); tys = smooth(tys, 13)
+    mean_cx, mean_ty = float(cxs.mean()), float(tys.mean())   # crest/glow lock onto the tracked building's drift
     print(f"tracked {len(cxs)} frames; spire ~x{cxs.mean():.0f} y{tys.mean():.0f}", file=sys.stderr)
 
     rows = np.arange(gh)[:, None].astype(np.float32)
@@ -254,6 +268,7 @@ def main():
     hugel = 0.299 * huge[..., 0] + 0.587 * huge[..., 1] + 0.114 * huge[..., 2]
     aura_layer = (widel[..., None] * 3.0 + hugel[..., None] * 4.5) * (CYBER / 255.0) * args.aura
     aura_layer = aura_layer * (1 - 0.55 * omask[..., None])   # halo AROUND the crest; let its colour read
+    crest_layer = emblem_proj * 1.25 + emb_near              # crisp crest + its near glow, animated together
 
     # radiance welling up from BEHIND the skyline — a soft, sourceless fan whose origin
     # is hidden below/behind the buildings. Broad cone + faint god-ray striations,
@@ -272,9 +287,10 @@ def main():
     rad = np.exp(-dist / (args.rayreach * H))              # fades up into the sky
     rays = np.clip(1.0 + 0.18 * np.sin(ang * 11.0), 0, 2)  # faint volumetric striations
     horizon = args.basey * H
-    emerge = np.clip((horizon - Yf) / (0.11 * H), 0, 1)    # 0 at/below skyline, hides the origin
+    emerge = np.clip((horizon + 0.05 * H - Yf) / (0.12 * H), 0, 1)   # fade toward/below the skyline
     topfade = np.clip(Yf / (0.05 * H), 0, 1)               # soft at the very top edge
-    radiance = rad * cone * rays * np.clip(dotp, 0, 1) * emerge * topfade
+    originhide = np.clip(dist / (0.14 * H), 0, 1)          # no bright point at the source — origin unknown
+    radiance = rad * cone * rays * np.clip(dotp, 0, 1) * emerge * topfade * originhide
     ray_layer = radiance[..., None] * CYBER * args.rayglow
 
     writer = subprocess.Popen(
@@ -293,8 +309,26 @@ def main():
         vboost = np.clip(np.power(np.clip((cellL - 0.05) / 0.95, 0, 1), 0.5) * 3.0, 0, 1)
 
         # scene gets a faint green LGK texture so the world still reads as code
-        I = args.scene * vboost
+        # ---- matrix RAIN: per-column falling streams of LGK with white-hot heads, so
+        #      the individual cells fall and flicker like the reference's binary rain ----
+        head = np.mod(rspeed * t + rphase, rperiod)            # (gw,) leading-glyph row per column
+        dist_r = head[None, :] - rowsg                         # (gh,gw) rows trailing the head
+        rain_b = np.clip(1.0 - dist_r / rtail[None, :], 0, 1) * (dist_r >= 0)
+        headness = np.clip(1.0 - np.abs(dist_r), 0, 1)         # ~1 only at the leading glyph
+
+        I = np.maximum(args.scene * vboost, args.rain * rain_b)
+        I = np.maximum(I, headness * args.rain)
         C = np.broadcast_to(GREEN, (gh, gw, 3)).copy()
+        C = C * (1 - headness[..., None]) + GREEN_HEAD * headness[..., None]
+
+        # sparse Knicks-colour tracers flickering through the rain
+        htick = int(t * 12)
+        hsel = np.random.default_rng(2000 + htick).random((gh, gw))
+        otr = (hsel < 0.004) & (rain_b > 0.04)
+        btr = (hsel > 0.996) & (rain_b > 0.04)
+        C = np.where(otr[..., None], KNICKS_ORANGE, C)
+        C = np.where(btr[..., None], SPIRE_BLUE, C)
+        I = np.where(otr | btr, np.maximum(I, 0.9), I)
 
         # ---- the constructed Empire State Building ----
         center = cxs[n] / cell                      # building center column (cells)
@@ -334,10 +368,10 @@ def main():
         I = np.where(use_b, Ib, I)
         C = np.where(use_b[..., None], Cb, C)
 
-        # ---- render LGK glyphs from the combined intensity/color grid ----
-        scroll = int(t * 6) % RF
-        ridx = (np.arange(gh)[:, None] + scroll) % RF
-        didx = randfield[ridx, np.arange(gw)[None, :]]
+        # ---- render LGK glyphs; per-column scroll makes the cells fall and flicker ----
+        col_scroll = ((rspeed + args.flicker) * t).astype(np.int32)   # per-column fall + fast flicker
+        ridx = (np.arange(gh)[:, None] + col_scroll[None, :]) % RF
+        didx = randfield[ridx, colidx]
         mask = atlas[didx].transpose(0, 2, 1, 3).reshape(H, W)
         colI = (C * I[..., None])
         colI = np.repeat(np.repeat(colI, cell, 0), cell, 1)
@@ -355,19 +389,20 @@ def main():
 
         # ---- once the building is built, the cyber radiance wells up from behind the
         #      skyline and the Knicks crest resolves within it, glowing majestically.
-        #      Everything eases in gracefully and holds with a slow, elegant breath. ----
+        #      The crest + glow are LOCKED to the tracked building's drift, so they sit
+        #      in the moving scene instead of floating in fixed screen space. ----
         sigstart = args.buildsecs + 0.30
         te = t - sigstart
         if te >= 0:
             on = float(np.clip(te / 0.60, 0, 1)); on = on * on * (3 - 2 * on)  # graceful ease-in
             swell = 1 + 0.20 * float(np.exp(-te / 0.5))                        # soft majestic swell, settles
             breathe = 1 + 0.05 * float(np.sin(2 * np.pi * 0.40 * te))          # slow elegant breathing
+            dx = int(round(cxs[n] - mean_cx)); dy = int(round(tys[n] - mean_ty))   # track the scene's motion
             occl = 1.0 - 0.85 * np.clip(lum / 120.0, 0, 1)                     # the city occludes the glow behind it
-            out_f += ray_layer * (occl[..., None] * (on * swell * breathe))    # radiance from behind the buildings
-            out_f += aura_layer * (on * breathe)                               # cyber halo
-
+            out_f += np.roll(ray_layer, (dy, dx), (0, 1)) * (occl[..., None] * (on * swell * breathe))
+            out_f += np.roll(aura_layer, (dy, dx), (0, 1)) * (on * breathe)    # cyber halo
             ef = float(np.clip((te - 0.12) / 0.65, 0, 1)); ef = ef * ef * (3 - 2 * ef)
-            out_f += (emblem_proj * 1.25 + emb_near) * (ef * breathe)          # crest resolves into the glow
+            out_f += np.roll(crest_layer, (dy, dx), (0, 1)) * (ef * breathe)   # crest resolves into the glow
 
         out = np.clip(out_f, 0, 255).astype(np.uint8)
         writer.stdin.write(out.tobytes())
