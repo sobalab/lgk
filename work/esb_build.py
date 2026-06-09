@@ -69,9 +69,10 @@ LOGO_BLUE = np.array([22, 110, 255], np.float32)      # electric royal blue
 LOGO_GRAY = np.array([195, 205, 222], np.float32)     # bright silver accents
 
 
-def make_logo_layer(canvas_W, logo_path, target_w, cell, chars):
+def make_logo_layer(canvas_W, logo_path, target_w, cell, chars, seed=3):
     """Render the Knicks logo as LGK glyphs: orange / blue / gray by region.
-    Returns an (outH, canvas_W, 3) float layer, the logo centered horizontally."""
+    `seed` varies only the glyph CHARACTERS (not the colours), so different seeds
+    are flicker frames of the same crest. Returns (emblem_rgb, outW, outH)."""
     im = Image.open(logo_path).convert("RGBA")
     arr = np.asarray(im, np.float32)
     rgb, a = arr[..., :3], arr[..., 3]
@@ -91,7 +92,7 @@ def make_logo_layer(canvas_W, logo_path, target_w, cell, chars):
     img = Image.new("RGB", (outW, outH), (0, 0, 0))
     d = ImageDraw.Draw(img)
     fnt = ImageFont.truetype(FONT_PATH, cell + 1)
-    rng = np.random.default_rng(3)
+    rng = np.random.default_rng(seed)
     for r in range(rows):
         for c in range(cols):
             if rs_pre[r, c] < 0.38:        # tighter cut -> cleaner shapes, more black contrast
@@ -160,29 +161,37 @@ def main():
     ap.add_argument("--greentint", type=float, default=0.5)
     ap.add_argument("--scene", type=float, default=0.35, help="subtle LGK on the rest of the scene")
     ap.add_argument("--rain", type=float, default=0.85, help="strength of the falling digital rain")
+    ap.add_argument("--raindensity", type=float, default=0.42, help="fraction of columns that rain (lower = sparser)")
     ap.add_argument("--flicker", type=float, default=12.0, help="per-cell digit flicker rate (changes/sec)")
+    ap.add_argument("--lights", type=float, default=0.6, help="brightness of city/car lights rendered as binary ascii")
+    ap.add_argument("--lightglow", type=float, default=1.7, help="glow/bloom on the city + car lights")
+    ap.add_argument("--lightthr", type=float, default=0.20, help="luminance threshold for what counts as a light")
     ap.add_argument("--glow", type=float, default=1.1)
     ap.add_argument("--glowradius", type=float, default=15.0)
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
     ap.add_argument("--basey", type=float, default=0.72, help="skyline horizon (fraction of H) where the base sits")
     ap.add_argument("--wscale", type=float, default=0.60, help="building width scale (slimmer = more distant)")
     ap.add_argument("--logo", default=os.path.join(os.path.dirname(__file__), "knicks_logo.png"))
-    ap.add_argument("--logow", type=int, default=600, help="Knicks crest on-screen width in px (bottom edge)")
-    ap.add_argument("--logocell", type=int, default=12, help="character size in the logo")
-    ap.add_argument("--logox", type=float, default=0.50, help="crest center x (fraction of W)")
-    ap.add_argument("--logoy", type=float, default=0.21, help="crest center y (fraction of H)")
-    ap.add_argument("--logoglow", type=float, default=1.6, help="glow/bloom strength on the logo")
-    # ---- the crest floats in PERSPECTIVE (foreshortened, tilted) and glows with a
-    #      majestic, elegant cyber radiance that wells up from behind the skyline ----
-    ap.add_argument("--tilt", type=float, default=0.64, help="vertical foreshortening of the crest (1=flat-on, smaller=more edge-on)")
-    ap.add_argument("--keystone", type=float, default=0.86, help="far (top) edge width fraction — perspective recede")
-    ap.add_argument("--rot", type=float, default=0.0, help="in-plane tilt of the crest, degrees")
-    ap.add_argument("--aura", type=float, default=1.0, help="strength of the soft cyber glow around the crest")
-    ap.add_argument("--rayglow", type=float, default=0.9, help="strength of the radiance welling up from behind the buildings")
-    ap.add_argument("--originx", type=float, default=0.50, help="hidden glow origin x, behind the skyline (fraction of W)")
+    ap.add_argument("--logow", type=int, default=300, help="Knicks crest on-screen width in px (near edge)")
+    ap.add_argument("--logocell", type=int, default=10, help="character size in the logo")
+    ap.add_argument("--logox", type=float, default=0.63, help="crest center x (fraction of W)")
+    ap.add_argument("--logoy", type=float, default=0.30, help="crest center y (fraction of H)")
+    ap.add_argument("--logoglow", type=float, default=1.3, help="glow/bloom strength on the logo")
+    # ---- the crest sits small + distant, SLANTED in perspective (receding toward
+    #      center-right), its ascii chars flickering, the whole sign fading in and out ----
+    ap.add_argument("--tilt", type=float, default=0.72, help="vertical foreshortening of the crest")
+    ap.add_argument("--recede", type=float, default=0.58, help="far (right) edge scale — perspective recede toward center-right")
+    ap.add_argument("--keystone", type=float, default=0.92, help="far (top) edge width fraction")
+    ap.add_argument("--rot", type=float, default=-13.0, help="in-plane slant of the crest, degrees")
+    ap.add_argument("--logovars", type=int, default=8, help="number of glyph flicker frames for the crest")
+    ap.add_argument("--logoflicker", type=float, default=11.0, help="crest ascii flicker rate (changes/sec)")
+    ap.add_argument("--fadeperiod", type=float, default=2.6, help="seconds for one fade in+out cycle of the whole logo")
+    ap.add_argument("--aura", type=float, default=0.55, help="strength of the soft cyber glow around the crest")
+    ap.add_argument("--rayglow", type=float, default=0.4, help="strength of the radiance/spotlight from behind the buildings")
+    ap.add_argument("--originx", type=float, default=0.52, help="hidden glow origin x, behind the skyline (fraction of W)")
     ap.add_argument("--originy", type=float, default=0.66, help="hidden glow origin y, in the skyline behind the buildings (fraction of H)")
-    ap.add_argument("--rayreach", type=float, default=0.62, help="how far the radiance reaches up the sky (fraction of H)")
-    ap.add_argument("--conew", type=float, default=0.72, help="angular width of the radiance fan, radians")
+    ap.add_argument("--rayreach", type=float, default=0.55, help="how far the radiance reaches up the sky (fraction of H)")
+    ap.add_argument("--conew", type=float, default=0.62, help="angular width of the radiance fan, radians")
     args = ap.parse_args()
 
     fps = eval(args.fps) if "/" in str(args.fps) else float(args.fps)
@@ -195,14 +204,17 @@ def main():
     RF = 512
     rng = np.random.default_rng(7)
     randfield = rng.integers(0, N, size=(RF, gw))
+    bin_atlas = build_atlas(cell, cell + 2, "01")        # 0/1 glyphs for the city + car lights
+    randbin = rng.integers(0, 2, size=(RF, gw))
 
     # per-column rain: each column falls at its own speed, so cells both fall and
     # flicker (the field scrolls past them), like the reference's binary rain
     rrng = np.random.default_rng(11)
-    rspeed = rrng.uniform(8.0, 22.0, gw).astype(np.float32)            # rows/sec
-    rtail = rrng.uniform(6.0, 18.0, gw).astype(np.float32)             # streak length
-    rperiod = (gh + rtail + rrng.uniform(4.0, 30.0, gw)).astype(np.float32)
+    rspeed = rrng.uniform(7.0, 18.0, gw).astype(np.float32)            # rows/sec
+    rtail = rrng.uniform(5.0, 14.0, gw).astype(np.float32)             # streak length
+    rperiod = (gh + rtail + rrng.uniform(40.0, 160.0, gw)).astype(np.float32)   # long gaps -> sparse
     rphase = (rrng.uniform(0, 1, gw) * rperiod).astype(np.float32)
+    ractive = (rrng.random(gw) < args.raindensity).astype(np.float32)[None, :]  # only some columns rain
     rowsg = np.arange(gh)[:, None].astype(np.float32)
     colidx = np.arange(gw)[None, :]
 
@@ -222,53 +234,64 @@ def main():
     rows = np.arange(gh)[:, None].astype(np.float32)
     cols = np.arange(gw)[None, :].astype(np.float32)
 
-    emb, eW, eH = make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars)
+    emb0, eW, eH = make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars, seed=10)
 
-    # ---- the crest in PERSPECTIVE (foreshortened, tilted), wreathed in an elegant
-    #      cyber glow, with a soft radiance welling up from behind the skyline.
-    #      Layers precomputed once and animated per frame. ----
+    # ---- the crest sits small + distant, SLANTED in perspective: a near (left) edge
+    #      with a receding far (right) edge, so the sign stretches toward center-right.
+    #      Its ascii chars flicker (cycling glyph variants) and the whole sign fades
+    #      in and out. A soft, dimmed cyber spotlight wells up from behind the skyline. ----
     CYBER = np.array([120, 195, 255], np.float32)         # cool electric cyber glow
     ecx, ecy = args.logox * W, args.logoy * H             # crest center on screen
-    Wp = float(args.logow)                                # on-screen width (near/bottom edge)
-    Hp = Wp * (eH / eW) * args.tilt                       # vertical foreshortening
-    tf = args.keystone                                    # top edge recedes (perspective)
+    Wp = float(args.logow)
+    Hp = Wp * (eH / eW) * args.tilt
+    rf = args.recede                                      # far (right) edge recedes into the distance
     rot = math.radians(args.rot)
     cr, srot = math.cos(rot), math.sin(rot)
-    # local crest corners (TL, TR, BR, BL), centered, keystoned + squashed, then rotated
-    local = [(-Wp / 2 * tf, -Hp / 2), (Wp / 2 * tf, -Hp / 2), (Wp / 2, Hp / 2), (-Wp / 2, Hp / 2)]
+    # local corners (TL, TR, BR, BL): left edge full height, right edge shortened, slanted
+    local = [(-Wp / 2, -Hp / 2), (Wp / 2, -Hp / 2 * rf), (Wp / 2, Hp / 2 * rf), (-Wp / 2, Hp / 2)]
     emb_quad = [(ecx + x * cr - y * srot, ecy + x * srot + y * cr) for x, y in local]
     src_quad = [(0, 0), (eW, 0), (eW, eH), (0, eH)]
-
-    emb_img = Image.fromarray(np.clip(emb, 0, 255).astype(np.uint8))
     coeffs = find_coeffs(emb_quad, src_quad)
-    emblem_proj = np.asarray(emb_img.transform((W, H), Image.PERSPECTIVE, coeffs,
-                                               resample=Image.BILINEAR), np.float32)
 
-    # confine the crest to a soft oval so its glow stays organic (no warped-rectangle edges)
+    # soft oval mask in the SAME perspective so every flicker frame's glow stays organic
     GS = 256
     gyy, gxx = np.mgrid[0:GS, 0:GS]
     grr = np.sqrt(((gxx - GS / 2) / (GS / 2)) ** 2 + ((gyy - GS / 2) / (GS / 2)) ** 2).astype(np.float32)
     ofill = np.clip((1.06 - grr) / 0.16, 0, 1)
-    s = 1.30
+    s = 1.32
     omask_quad = [(ecx + (x - ecx) * s, ecy + (y - ecy) * s) for x, y in emb_quad]
     ocoeffs = find_coeffs(omask_quad, [(0, 0), (GS, 0), (GS, GS), (0, GS)])
     omask = np.asarray(Image.fromarray((ofill * 255).astype(np.uint8)).transform(
         (W, H), Image.PERSPECTIVE, ocoeffs, resample=Image.BILINEAR), np.float32) / 255.0
-    emblem_proj = emblem_proj * omask[..., None]
 
-    # majestic, elegant cyber glow: layered blooms. The near blooms carry the crest's
-    # own Knicks colour; the wide blooms are recast as a cool cyber halo so the whole
-    # thing reads as an electric, diffuse radiance rather than a literal light.
-    ei = Image.fromarray(np.clip(emblem_proj, 0, 255).astype(np.uint8))
-    emb_near = (np.asarray(ei.filter(ImageFilter.GaussianBlur(7)), np.float32) * 1.15
-                + np.asarray(ei.filter(ImageFilter.GaussianBlur(19)), np.float32) * 0.70) * args.logoglow
-    wide = np.asarray(ei.filter(ImageFilter.GaussianBlur(52)), np.float32)
-    huge = np.asarray(ei.filter(ImageFilter.GaussianBlur(104)), np.float32)
+    def warp_crest(emb_arr):
+        im = Image.fromarray(np.clip(emb_arr, 0, 255).astype(np.uint8))
+        proj = np.asarray(im.transform((W, H), Image.PERSPECTIVE, coeffs,
+                                       resample=Image.BILINEAR), np.float32) * omask[..., None]
+        pi = Image.fromarray(np.clip(proj, 0, 255).astype(np.uint8))
+        near = (np.asarray(pi.filter(ImageFilter.GaussianBlur(6)), np.float32) * 1.15
+                + np.asarray(pi.filter(ImageFilter.GaussianBlur(16)), np.float32) * 0.70) * args.logoglow
+        return proj, proj * 1.25 + near
+
+    # K flicker frames: identical colour/shape, different glyph CHARACTERS
+    K = max(1, args.logovars)
+    crest_variants = []
+    proj0 = None
+    for k in range(K):
+        embk = emb0 if k == 0 else make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars, seed=10 + k)[0]
+        projk, crestk = warp_crest(embk)
+        if k == 0:
+            proj0 = projk
+        crest_variants.append(crestk)
+
+    # cool cyber halo derived from one variant (blur hides the flicker)
+    p0 = Image.fromarray(np.clip(proj0, 0, 255).astype(np.uint8))
+    wide = np.asarray(p0.filter(ImageFilter.GaussianBlur(40)), np.float32)
+    huge = np.asarray(p0.filter(ImageFilter.GaussianBlur(80)), np.float32)
     widel = 0.299 * wide[..., 0] + 0.587 * wide[..., 1] + 0.114 * wide[..., 2]
     hugel = 0.299 * huge[..., 0] + 0.587 * huge[..., 1] + 0.114 * huge[..., 2]
     aura_layer = (widel[..., None] * 3.0 + hugel[..., None] * 4.5) * (CYBER / 255.0) * args.aura
     aura_layer = aura_layer * (1 - 0.55 * omask[..., None])   # halo AROUND the crest; let its colour read
-    crest_layer = emblem_proj * 1.25 + emb_near              # crisp crest + its near glow, animated together
 
     # radiance welling up from BEHIND the skyline — a soft, sourceless fan whose origin
     # is hidden below/behind the buildings. Broad cone + faint god-ray striations,
@@ -313,8 +336,8 @@ def main():
         #      the individual cells fall and flicker like the reference's binary rain ----
         head = np.mod(rspeed * t + rphase, rperiod)            # (gw,) leading-glyph row per column
         dist_r = head[None, :] - rowsg                         # (gh,gw) rows trailing the head
-        rain_b = np.clip(1.0 - dist_r / rtail[None, :], 0, 1) * (dist_r >= 0)
-        headness = np.clip(1.0 - np.abs(dist_r), 0, 1)         # ~1 only at the leading glyph
+        rain_b = np.clip(1.0 - dist_r / rtail[None, :], 0, 1) * (dist_r >= 0) * ractive
+        headness = np.clip(1.0 - np.abs(dist_r), 0, 1) * ractive   # ~1 only at the leading glyph
 
         I = np.maximum(args.scene * vboost, args.rain * rain_b)
         I = np.maximum(I, headness * args.rain)
@@ -394,15 +417,19 @@ def main():
         sigstart = args.buildsecs + 0.30
         te = t - sigstart
         if te >= 0:
-            on = float(np.clip(te / 0.60, 0, 1)); on = on * on * (3 - 2 * on)  # graceful ease-in
-            swell = 1 + 0.20 * float(np.exp(-te / 0.5))                        # soft majestic swell, settles
+            on = float(np.clip(te / 0.60, 0, 1)); on = on * on * (3 - 2 * on)  # spotlight ramps up once
+            swell = 1 + 0.20 * float(np.exp(-te / 0.5))
             breathe = 1 + 0.05 * float(np.sin(2 * np.pi * 0.40 * te))          # slow elegant breathing
             dx = int(round(cxs[n] - mean_cx)); dy = int(round(tys[n] - mean_ty))   # track the scene's motion
             occl = 1.0 - 0.85 * np.clip(lum / 120.0, 0, 1)                     # the city occludes the glow behind it
             out_f += np.roll(ray_layer, (dy, dx), (0, 1)) * (occl[..., None] * (on * swell * breathe))
-            out_f += np.roll(aura_layer, (dy, dx), (0, 1)) * (on * breathe)    # cyber halo
-            ef = float(np.clip((te - 0.12) / 0.65, 0, 1)); ef = ef * ef * (3 - 2 * ef)
-            out_f += np.roll(crest_layer, (dy, dx), (0, 1)) * (ef * breathe)   # crest resolves into the glow
+
+            # the whole Knicks sign fades IN and OUT in a slow cycle; its ascii flickers
+            fade = on * (0.5 - 0.5 * float(np.cos(2 * np.pi * te / args.fadeperiod)))
+            if fade > 0.01:
+                vk = (int(te * args.logoflicker) * 5) % len(crest_variants)    # scrambled glyph flicker
+                out_f += np.roll(aura_layer, (dy, dx), (0, 1)) * (fade * breathe)
+                out_f += np.roll(crest_variants[vk], (dy, dx), (0, 1)) * (fade * breathe)
 
         out = np.clip(out_f, 0, 255).astype(np.uint8)
         writer.stdin.write(out.tobytes())
