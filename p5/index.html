@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LGK — live p5</title>
+<style>
+  html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:Menlo,monospace}
+  #holder{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{max-width:100vw;max-height:100vh;box-shadow:0 0 80px #00b3ff22}
+  #panel{position:fixed;top:8px;left:8px;z-index:10;background:#0a0f14cc;border:1px solid #1d2a36;
+    border-radius:8px;padding:8px 10px;color:#9fd; font-size:11px; max-height:96vh; overflow:auto; width:210px;
+    backdrop-filter:blur(4px)}
+  #panel h3{margin:2px 0 6px; font-size:11px; color:#7ef; font-weight:600; letter-spacing:.04em}
+  #panel label{display:flex; justify-content:space-between; gap:6px; align-items:center; margin:3px 0}
+  #panel label span{flex:1}
+  #panel input[type=range]{flex:1.3; accent-color:#3cf}
+  #panel .v{width:34px; text-align:right; color:#cfe}
+  #hud{position:fixed;bottom:8px;left:8px;z-index:10;color:#5af8;font-size:11px}
+  #panel .hint{color:#567; margin-top:6px; line-height:1.4}
+  button#toggle{position:fixed;top:8px;left:8px;z-index:11;display:none}
+</style>
+</head>
+<body>
+  <div id="holder"></div>
+  <div id="panel"><h3>LGK · live</h3></div>
+  <div id="hud"></div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+  <script src="sketch.js"></script>
+</body>
+</html>
