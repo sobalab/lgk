@@ -27,8 +27,8 @@ const P = {
   noiseamt: 0.38, spark: 0.0045,
   glow: 1.1, glowradius: 15.0,
   buildsecs: 2.0, basey: 0.72, wscale: 0.60,
-  logow: 300, logocell: 10, logox: 0.63, logoy: 0.30, logoglow: 2.2,
-  tilt: 0.72, recede: 0.58, rot: -13.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
+  logow: 470, logocell: 10, logox: 0.65, logoy: 0.31, logoglow: 2.2,
+  tilt: 0.78, recede: 0.58, rot: 5.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
   aura: 0.55, rayglow: 0.4, originx: 0.52, originy: 0.66, rayreach: 0.55, conew: 0.62,
 };
 
