@@ -25,6 +25,7 @@ SHAFT_BLUE = np.array([48, 92, 245], np.float32)    # deep royal main shaft (mat
 KNICKS_ORANGE = np.array([255, 140, 40], np.float32)  # amber crown
 GREEN = np.array([30, 200, 70], np.float32)
 GREEN_HEAD = np.array([205, 255, 215], np.float32)   # white-hot leading glyph of a rain stream
+ELECTRIC = np.array([90, 225, 255], np.float32)      # electric cyan spark
 EDGE = np.array([225, 240, 255], np.float32)   # bright construction front
 
 # Empire State Building half-width profile (yn: 0=spire tip .. 1=base), in cells.
@@ -166,6 +167,8 @@ def main():
     ap.add_argument("--lights", type=float, default=0.6, help="brightness of city/car lights rendered as binary ascii")
     ap.add_argument("--lightglow", type=float, default=1.7, help="glow/bloom on the city + car lights")
     ap.add_argument("--lightthr", type=float, default=0.20, help="luminance threshold for what counts as a light")
+    ap.add_argument("--noiseamt", type=float, default=0.38, help="perlin-noise dither on the ascii thresholds (organic edges)")
+    ap.add_argument("--spark", type=float, default=0.0045, help="density of flickering electric-cyan sparks")
     ap.add_argument("--glow", type=float, default=1.1)
     ap.add_argument("--glowradius", type=float, default=15.0)
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
@@ -176,7 +179,7 @@ def main():
     ap.add_argument("--logocell", type=int, default=10, help="character size in the logo")
     ap.add_argument("--logox", type=float, default=0.63, help="crest center x (fraction of W)")
     ap.add_argument("--logoy", type=float, default=0.30, help="crest center y (fraction of H)")
-    ap.add_argument("--logoglow", type=float, default=1.3, help="glow/bloom strength on the logo")
+    ap.add_argument("--logoglow", type=float, default=2.2, help="glow/bloom strength on the logo ascii")
     # ---- the crest sits small + distant, SLANTED in perspective (receding toward
     #      center-right), its ascii chars flickering, the whole sign fading in and out ----
     ap.add_argument("--tilt", type=float, default=0.72, help="vertical foreshortening of the crest")
@@ -206,6 +209,11 @@ def main():
     randfield = rng.integers(0, N, size=(RF, gw))
     bin_atlas = build_atlas(cell, cell + 2, "01")        # 0/1 glyphs for the city + car lights
     randbin = rng.integers(0, 2, size=(RF, gw))
+    # smooth value-noise grid (perlin-like): a low-res random field bicubically
+    # upsampled, scrolled over time, used to organically dither the ascii thresholds
+    nlr = np.random.default_rng(33).random((max(2, RF // 6), max(2, gw // 4)))
+    noise_field = np.asarray(Image.fromarray((nlr * 255).astype(np.uint8)).resize(
+        (gw, RF), Image.BICUBIC), np.float32) / 255.0
 
     # per-column rain: each column falls at its own speed, so cells both fall and
     # flicker (the field scrolls past them), like the reference's binary rain
@@ -240,7 +248,7 @@ def main():
     #      with a receding far (right) edge, so the sign stretches toward center-right.
     #      Its ascii chars flicker (cycling glyph variants) and the whole sign fades
     #      in and out. A soft, dimmed cyber spotlight wells up from behind the skyline. ----
-    CYBER = np.array([120, 195, 255], np.float32)         # cool electric cyber glow
+    CYBER = np.array([90, 205, 255], np.float32)          # electric cyan-blue cyber glow
     ecx, ecy = args.logox * W, args.logoy * H             # crest center on screen
     Wp = float(args.logow)
     Hp = Wp * (eH / eW) * args.tilt
@@ -269,9 +277,10 @@ def main():
         proj = np.asarray(im.transform((W, H), Image.PERSPECTIVE, coeffs,
                                        resample=Image.BILINEAR), np.float32) * omask[..., None]
         pi = Image.fromarray(np.clip(proj, 0, 255).astype(np.uint8))
-        near = (np.asarray(pi.filter(ImageFilter.GaussianBlur(6)), np.float32) * 1.15
-                + np.asarray(pi.filter(ImageFilter.GaussianBlur(16)), np.float32) * 0.70) * args.logoglow
-        return proj, proj * 1.25 + near
+        near = (np.asarray(pi.filter(ImageFilter.GaussianBlur(4)), np.float32) * 1.5
+                + np.asarray(pi.filter(ImageFilter.GaussianBlur(11)), np.float32) * 1.0
+                + np.asarray(pi.filter(ImageFilter.GaussianBlur(26)), np.float32) * 0.6) * args.logoglow
+        return proj, proj * 1.3 + near
 
     # K flicker frames: identical colour/shape, different glyph CHARACTERS
     K = max(1, args.logovars)
@@ -311,9 +320,11 @@ def main():
     rays = np.clip(1.0 + 0.18 * np.sin(ang * 11.0), 0, 2)  # faint volumetric striations
     horizon = args.basey * H
     emerge = np.clip((horizon + 0.05 * H - Yf) / (0.12 * H), 0, 1)   # fade toward/below the skyline
-    topfade = np.clip(Yf / (0.05 * H), 0, 1)               # soft at the very top edge
     originhide = np.clip(dist / (0.14 * H), 0, 1)          # no bright point at the source — origin unknown
-    radiance = rad * cone * rays * np.clip(dotp, 0, 1) * emerge * topfade * originhide
+    along = vx * axu + vy * ayu                            # distance travelled along the beam from origin
+    tocrest = 0.40 + 0.60 * np.clip(along / La, 0, 1)      # the beam strengthens toward the logo
+    endcap = np.clip((La - along) / (0.09 * H) + 1.0, 0, 1)  # ...and ENDS at the logo (fades just beyond)
+    radiance = rad * cone * rays * np.clip(dotp, 0, 1) * emerge * originhide * tocrest * endcap
     ray_layer = radiance[..., None] * CYBER * args.rayglow
 
     writer = subprocess.Popen(
@@ -339,7 +350,11 @@ def main():
         rain_b = np.clip(1.0 - dist_r / rtail[None, :], 0, 1) * (dist_r >= 0) * ractive
         headness = np.clip(1.0 - np.abs(dist_r), 0, 1) * ractive   # ~1 only at the leading glyph
 
-        I = np.maximum(args.scene * vboost, args.rain * rain_b)
+        # perlin-like noise grid: organically dither the threshold so the ascii field
+        # has feathered, clustered edges instead of a hard cutoff
+        nz = noise_field[(np.arange(gh)[:, None] + int(t * 6)) % RF, colidx]   # (gh,gw) smooth, animated
+        scene_gate = np.clip((vboost * 1.6 + (nz - 0.5) * args.noiseamt - 0.12) / 0.28, 0, 1)
+        I = np.maximum(args.scene * vboost * scene_gate, args.rain * rain_b)
         I = np.maximum(I, headness * args.rain)
         C = np.broadcast_to(GREEN, (gh, gw, 3)).copy()
         C = C * (1 - headness[..., None]) + GREEN_HEAD * headness[..., None]
@@ -352,6 +367,12 @@ def main():
         C = np.where(otr[..., None], KNICKS_ORANGE, C)
         C = np.where(btr[..., None], SPIRE_BLUE, C)
         I = np.where(otr | btr, np.maximum(I, 0.9), I)
+
+        # electric crackle: bright cyan sparks flickering fast through the field
+        esel = np.random.default_rng(5000 + int(t * 22)).random((gh, gw))
+        spark = (esel < args.spark) & (I > 0.03)
+        C = np.where(spark[..., None], ELECTRIC, C)
+        I = np.where(spark, np.maximum(I, 1.15), I)
 
         # ---- the constructed Empire State Building ----
         center = cxs[n] / cell                      # building center column (cells)
@@ -408,7 +429,24 @@ def main():
 
         cimg = Image.fromarray(np.clip(char, 0, 255).astype(np.uint8))
         glow = np.asarray(cimg.filter(ImageFilter.GaussianBlur(args.glowradius)), np.float32) * args.glow
-        out_f = base + char + glow
+        ebuzz = 1.0 + 0.06 * math.sin(2 * math.pi * t * 37) + 0.04 * math.sin(2 * math.pi * t * 113)  # electric buzz
+        out_f = base + (char + glow) * ebuzz
+
+        # ---- city + car lights: faint, glowing BINARY ascii kept in their native colour ----
+        cRf = frame[..., 0].reshape(gh, cell, gw, cell).mean((1, 3))
+        cGf = frame[..., 1].reshape(gh, cell, gw, cell).mean((1, 3))
+        cBf = frame[..., 2].reshape(gh, cell, gw, cell).mean((1, 3))
+        litw = np.clip((cellL - args.lightthr + (nz - 0.5) * args.noiseamt * 0.5) / 0.34, 0, 1) ** 1.3  # noise-dithered
+        nat = np.stack([cRf, cGf, cBf], -1)
+        nat = nat / (nat.max(-1, keepdims=True) + 1e-3)                    # preserve native hue at full saturation
+        bscroll = int(t * args.flicker * 0.7)
+        bdidx = randbin[(np.arange(gh)[:, None] + bscroll) % RF, colidx]   # flickering 0/1
+        bmask = bin_atlas[bdidx].transpose(0, 2, 1, 3).reshape(H, W)
+        lcol = np.repeat(np.repeat(nat * (litw * args.lights * 255.0)[..., None], cell, 0), cell, 1)
+        lchar = lcol * bmask[..., None]
+        lci = Image.fromarray(np.clip(lchar, 0, 255).astype(np.uint8))
+        lglow = np.asarray(lci.filter(ImageFilter.GaussianBlur(args.glowradius * 0.7)), np.float32) * args.lightglow
+        out_f += lchar * 0.55 + lglow                                      # faded glyphs + a soft native glow
 
         # ---- once the building is built, the cyber radiance wells up from behind the
         #      skyline and the Knicks crest resolves within it, glowing majestically.
