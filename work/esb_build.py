@@ -43,18 +43,22 @@ def read_frames(path, W, H):
 
 
 def detect_anchor(frame, H):
+    """Lock onto the ESB spire = the TOPMOST strong-blue pixel (the tallest blue
+    feature in the skyline), not the average of every blue light in frame."""
     R, G, B = frame[..., 0], frame[..., 1], frame[..., 2]
     blue = np.clip(B - np.maximum(R, G), 0, 255) * (((R + G + B) / 3) > 20)
     band = blue.copy()
     band[int(H * 0.60):] = 0
-    band[:int(H * 0.05)] = 0
+    band[:int(H * 0.03)] = 0
     mx = band.max()
-    if mx < 25:
+    if mx < 35:
         return None
-    ys, xs = np.where(band > mx * 0.5)
-    cx = xs.mean()
+    thr = max(mx * 0.45, 35)
+    ys, xs = np.where(band > thr)
     tip_y = ys.min()
-    return cx, tip_y
+    near_tip = ys < tip_y + 22                      # only the spire top cluster
+    tip_x = xs[near_tip].mean()
+    return tip_x, tip_y
 
 
 def smooth(a, win=11):
@@ -140,8 +144,9 @@ def main():
         edge = np.clip(1 - np.abs(yn - front) / 0.05, 0, 1) * (front < 1)   # bright growing front
 
         Ib = np.where(grown, np.clip(0.95 * shimmer + 0.6 * edge, 0, 1.3), 0.0)
-        # Knicks bands: orange antenna + mid setback, blue spire + shaft + base
-        orange_band = ((yn < 0.20) | ((yn >= 0.40) & (yn < 0.53)))
+        # Knicks bands exactly like the photo: BLUE antenna+spire, ORANGE crown,
+        # BLUE main shaft + base
+        orange_band = (yn >= 0.40) & (yn < 0.52)
         Cb = np.where(orange_band[..., None], KNICKS_ORANGE, KNICKS_BLUE)
         Cb = Cb * (1 - edge[..., None]) + EDGE * edge[..., None]
 
