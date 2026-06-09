@@ -153,7 +153,9 @@ def main():
         # BLUE main shaft + base
         orange_band = (yn >= 0.40) & (yn < 0.59)
         shaft_band = (yn >= 0.59)
-        Cb = np.where(shaft_band[..., None], SHAFT_BLUE, SPIRE_BLUE)        # deep blue shaft, bright spire
+        shaft_t = np.clip((yn - 0.59) / (1 - 0.59), 0, 1)                  # 0 at shaft top, 1 at base
+        shaft_col = SHAFT_BLUE * (1 - 0.6 * shaft_t)[..., None]            # darken/fade toward the bottom
+        Cb = np.where(shaft_band[..., None], shaft_col, SPIRE_BLUE)        # deep blue shaft, bright spire
         Cb = np.where(orange_band[..., None], KNICKS_ORANGE, Cb)           # amber crown
         Cb = Cb * (1 - edge[..., None]) + EDGE * edge[..., None]
 
