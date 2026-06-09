@@ -33,6 +33,73 @@ def build_atlas(cell, font_size, chars):
     return atlas
 
 
+def make_text_layer(W, size):
+    """Pre-render 'LET'S GO KNICKS' centered: orange 'LET'S GO', blue 'KNICKS'."""
+    fnt = ImageFont.truetype(FONT_PATH, size)
+    segs = [("LET'S GO ", KNICKS_ORANGE), ("KNICKS", SPIRE_BLUE)]
+    meas = ImageDraw.Draw(Image.new("RGB", (10, 10)))
+    widths = [meas.textlength(s, font=fnt) for s, _ in segs]
+    total = sum(widths)
+    asc, desc = fnt.getmetrics()
+    Himg = asc + desc + 24
+    img = Image.new("RGB", (W, Himg), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    x = (W - total) / 2
+    for (s, col), w in zip(segs, widths):
+        d.text((x, 12), s, font=fnt, fill=tuple(int(c) for c in col))
+        x += w
+    return np.asarray(img, np.float32)
+
+
+LOGO_ORANGE = np.array([255, 120, 12], np.float32)   # vivid saturated orange (high contrast)
+LOGO_BLUE = np.array([22, 110, 255], np.float32)      # electric royal blue
+LOGO_GRAY = np.array([195, 205, 222], np.float32)     # bright silver accents
+
+
+def make_logo_layer(canvas_W, logo_path, target_w, cell, chars):
+    """Render the Knicks logo as LGK glyphs: orange / blue / gray by region.
+    Returns an (outH, canvas_W, 3) float layer, the logo centered horizontally."""
+    im = Image.open(logo_path).convert("RGBA")
+    arr = np.asarray(im, np.float32)
+    rgb, a = arr[..., :3], arr[..., 3]
+    present = (a > 40) & (rgb.min(axis=2) < 232)          # opaque and not white background
+    ys, xs = np.where(present)
+    y0, y1, x0, x1 = ys.min(), ys.max(), xs.min(), xs.max()
+    rgb = rgb[y0:y1 + 1, x0:x1 + 1] * present[y0:y1 + 1, x0:x1 + 1, None]
+    pres = present[y0:y1 + 1, x0:x1 + 1].astype(np.float32)
+    h, w = pres.shape
+    cols = max(1, target_w // cell)
+    rows = max(1, round(cols * h / w))
+    rs_rgb = np.asarray(Image.fromarray(rgb.astype(np.uint8)).resize((cols, rows)), np.float32)
+    rs_pre = np.asarray(Image.fromarray((pres * 255).astype(np.uint8)).resize((cols, rows)), np.float32) / 255
+    rs_rgb = rs_rgb / np.clip(rs_pre[..., None], 0.05, None)   # recover true hue under coverage
+
+    outW, outH = cols * cell, rows * cell
+    img = Image.new("RGB", (outW, outH), (0, 0, 0))
+    d = ImageDraw.Draw(img)
+    fnt = ImageFont.truetype(FONT_PATH, cell + 1)
+    rng = np.random.default_rng(3)
+    for r in range(rows):
+        for c in range(cols):
+            if rs_pre[r, c] < 0.38:        # tighter cut -> cleaner shapes, more black contrast
+                continue
+            R, G, B = rs_rgb[r, c]
+            if R > B + 18:
+                col = LOGO_ORANGE
+            elif B > R + 18:
+                col = LOGO_BLUE
+            else:
+                col = LOGO_GRAY
+            ch = chars[int(rng.integers(0, len(chars)))]
+            d.text((c * cell, r * cell), ch, font=fnt, fill=tuple(int(x) for x in col))
+
+    layer = np.zeros((outH, canvas_W, 3), np.float32)
+    px = max(0, (canvas_W - outW) // 2)
+    src = np.asarray(img, np.float32)[:, :min(outW, canvas_W)]
+    layer[:, px:px + src.shape[1]] = src
+    return layer
+
+
 def read_frames(path, W, H):
     p = subprocess.Popen(["ffmpeg", "-v", "error", "-i", path, "-f", "rawvideo",
                           "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
@@ -88,6 +155,11 @@ def main():
     ap.add_argument("--buildsecs", type=float, default=2.0, help="time for the building to grow in")
     ap.add_argument("--basey", type=float, default=0.72, help="skyline horizon (fraction of H) where the base sits")
     ap.add_argument("--wscale", type=float, default=0.60, help="building width scale (slimmer = more distant)")
+    ap.add_argument("--logo", default=os.path.join(os.path.dirname(__file__), "knicks_logo.png"))
+    ap.add_argument("--logow", type=int, default=660, help="Knicks logo width in px")
+    ap.add_argument("--logocell", type=int, default=12, help="character size in the logo")
+    ap.add_argument("--logoy", type=float, default=0.02, help="logo vertical position (fraction of H)")
+    ap.add_argument("--logoglow", type=float, default=1.5, help="glow/bloom strength on the logo")
     args = ap.parse_args()
 
     fps = eval(args.fps) if "/" in str(args.fps) else float(args.fps)
@@ -115,6 +187,10 @@ def main():
 
     rows = np.arange(gh)[:, None].astype(np.float32)
     cols = np.arange(gw)[None, :].astype(np.float32)
+
+    text_arr = make_logo_layer(W, args.logo, args.logow, args.logocell, args.chars)
+    TH = text_arr.shape[0]
+    ty = int(args.logoy * H)
 
     writer = subprocess.Popen(
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
@@ -160,6 +236,14 @@ def main():
         Cb = np.where(orange_band[..., None], KNICKS_ORANGE, Cb)           # amber crown
         Cb = Cb * (1 - edge[..., None]) + EDGE * edge[..., None]
 
+        # ---- payoff: completion flash + heartbeat once the building is fully built ----
+        if t >= args.buildsecs:
+            te = t - args.buildsecs
+            flash = np.exp(-te / 0.35)                                     # bright surge on completion
+            beat = 1 + 0.7 * flash + 0.12 * np.sin(2 * np.pi * 1.1 * te)   # then a steady pulse
+            Ib = Ib * beat
+            Cb = Cb * (1 - 0.5 * flash) + EDGE * (0.5 * flash)             # whiten at the peak
+
         # building overrides the scene where it is drawn
         use_b = grown & (Ib > I)
         I = np.where(use_b, Ib, I)
@@ -182,7 +266,21 @@ def main():
 
         cimg = Image.fromarray(np.clip(char, 0, 255).astype(np.uint8))
         glow = np.asarray(cimg.filter(ImageFilter.GaussianBlur(args.glowradius)), np.float32) * args.glow
-        out = np.clip(base + char + glow, 0, 255).astype(np.uint8)
+        out_f = base + char + glow
+
+        # ---- payoff text: "LET'S GO KNICKS" rises into the sky after the build ----
+        tstart = args.buildsecs + 0.45
+        fade = float(np.clip((t - tstart) / 0.7, 0, 1))
+        if fade > 0:
+            pulse = 0.85 + 0.15 * np.sin(2 * np.pi * 1.0 * (t - tstart))
+            tl = text_arr * (fade * pulse)
+            ti = Image.fromarray(np.clip(tl, 0, 255).astype(np.uint8))
+            gl = args.logoglow
+            g1 = np.asarray(ti.filter(ImageFilter.GaussianBlur(11)), np.float32) * (1.15 * gl)
+            g2 = np.asarray(ti.filter(ImageFilter.GaussianBlur(30)), np.float32) * (0.65 * gl)  # wide bloom
+            out_f[ty:ty + TH] += tl * 1.25 + g1 + g2
+
+        out = np.clip(out_f, 0, 255).astype(np.uint8)
         writer.stdin.write(out.tobytes())
         n += 1
 
