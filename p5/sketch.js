@@ -34,7 +34,8 @@ const P = {
   lights: 0.6, lightglow: 1.7, lightthr: 0.20,
   noiseamt: 0.38, spark: 0.0045,
   glow: 1.1, glowradius: 15.0,
-  buildsecs: 2.0, basey: 0.72, wscale: 0.60,
+  buildsecs: 2.0, basey: 0.72, wscale: 0.60, esbflicker: 9.0, esbflickamt: 0.16,
+  esbglow: 1.0, esbglowspeed: 0.5,
   logow: 520, logocell: 10, logox: 0.65, logoy: 0.24, logoglow: 1.3,
   tilt: 0.78, recede: 0.58, rot: 5.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
   aura: 0.55, rayglow: 0.4, originx: 0.52, originy: 0.66, rayreach: 0.55, conew: 0.62,
@@ -44,6 +45,7 @@ const P = {
 let video, font, logoImg, track;
 let sampleBuf;                 // video downscaled to GW x GH for per-cell sampling
 let codeBuf, codeGlow, lightBuf, lightGlow, wgl;
+let esbBuf, esbGlow;           // ESB glyphs + their lush cosmos-style color-cycling bloom
 let radImg, auraImg;           // static spotlight + halo (screen space)
 let radMask;                   // scratch buffer: radiance clipped to a growing disc from origin
 let esbMask;                   // baked ESB silhouette + facade coverage field (Float32)
@@ -123,9 +125,10 @@ function setup() {
   sampleBuf = createGraphics(GW, GH);
   codeBuf = createGraphics(W, H);  lightBuf = createGraphics(W, H);
   codeGlow = createGraphics(W, H); lightGlow = createGraphics(W, H);
+  esbBuf = createGraphics(W, H);   esbGlow = createGraphics(W, H);
   radMask = createGraphics(W, H);
-  for (const g of [codeBuf, lightBuf, codeGlow, lightGlow]) { g.textFont(font); g.textAlign(CENTER, CENTER); g.noStroke(); }
-  codeBuf.textSize(CELL + 2); lightBuf.textSize(CELL + 2);
+  for (const g of [codeBuf, lightBuf, codeGlow, lightGlow, esbBuf, esbGlow]) { g.textFont(font); g.textAlign(CENTER, CENTER); g.noStroke(); }
+  codeBuf.textSize(CELL + 2); lightBuf.textSize(CELL + 2); esbBuf.textSize(CELL + 2);
   wgl = createGraphics(W, H, WEBGL); wgl.textureMode(NORMAL); wgl.noStroke();
 
   buildFields();
@@ -313,7 +316,7 @@ function draw() {
   sampleBuf.loadPixels();
 
   // 2) build the code grid + lights grid (single pass over cells)
-  codeBuf.clear(); lightBuf.clear();
+  codeBuf.clear(); lightBuf.clear(); esbBuf.clear();
   const tscroll6 = Math.floor(t * 6), htick = Math.floor(t * 12), etick = Math.floor(t * 22);
   const bscroll = Math.floor(t * P.flicker * 0.7);
   const colScroll = new Int32Array(GW);
@@ -354,6 +357,7 @@ function draw() {
       // electric sparks
       if (I > 0.03 && hash3(5000 + etick, r, c) < P.spark) { cr0 = ELECTRIC[0]; cg0 = ELECTRIC[1]; cb0 = ELECTRIC[2]; I = Math.max(I, 1.15); }
       // ESB — sampled from the detailed Art Deco silhouette + facade mask
+      let esbCell = false;
       const yn = (r - tip) / BH;
       if (yn >= 0 && yn <= 1 && yn <= front) {
         const xn = (c + 0.5 - center) / Math.max(ESB_HWCELL * P.wscale, 0.001);
@@ -369,15 +373,22 @@ function draw() {
           else bcol = SPIRE_BLUE.slice();
           bcol = [bcol[0] * (1 - edge) + EDGE[0] * edge, bcol[1] * (1 - edge) + EDGE[1] * edge, bcol[2] * (1 - edge) + EDGE[2] * edge];
           if (built) { Ib *= beat; bcol = [bcol[0] * (1 - 0.5 * flash) + EDGE[0] * 0.5 * flash, bcol[1] * (1 - 0.5 * flash) + EDGE[1] * 0.5 * flash, bcol[2] * (1 - 0.5 * flash) + EDGE[2] * 0.5 * flash]; }
-          if (Ib > I) { I = Ib; cr0 = bcol[0]; cg0 = bcol[1]; cb0 = bcol[2]; }
+          // per-cell flicker: building glyphs blink in and out like unstable ascii
+          const fk = hash3(7000 + Math.floor(t * P.esbflicker), r, c);
+          if (fk < P.esbflickamt) Ib = 0;                              // flickered out
+          else if (fk < P.esbflickamt + 0.12) Ib *= 0.4;              // mid transition
+          if (Ib > I) { I = Ib; cr0 = bcol[0]; cg0 = bcol[1]; cb0 = bcol[2]; esbCell = true; }
         }
       }
       // draw the LGK glyph
       if (I > 0.02) {
         const m = I * ebuzz;
-        codeBuf.fill(clamp(cr0 * m, 0, 255), clamp(cg0 * m, 0, 255), clamp(cb0 * m, 0, 255));
+        const fr = clamp(cr0 * m, 0, 255), fg = clamp(cg0 * m, 0, 255), fb = clamp(cb0 * m, 0, 255);
+        codeBuf.fill(fr, fg, fb);
         const gi = randfield[(((r + colScroll[c]) % RF) + RF) % RF * GW + c];
-        codeBuf.text(CH[gi], c * CELL + CELL / 2, r * CELL + CELL / 2);
+        const gx = c * CELL + CELL / 2, gy = r * CELL + CELL / 2;
+        codeBuf.text(CH[gi], gx, gy);
+        if (esbCell) { esbBuf.fill(fr, fg, fb); esbBuf.text(CH[gi], gx, gy); }   // copy into the ESB bloom buffer
       }
       // city/car lights as faint native-colour binary
       const litw = Math.pow(clamp((lumc - P.lightthr + (nz - 0.5) * P.noiseamt * 0.5) / 0.34, 0, 1), 1.3);
@@ -405,6 +416,18 @@ function draw() {
   tint(255, 255, 255, clamp(P.glow, 0, 1) * 255); image(codeGlow, 0, 0); noTint();   // glow (glow<=1 here)
   image(lightBuf, 0, 0);
   tint(255, 255, 255, clamp(P.lightglow, 0, 1) * 255); image(lightGlow, 0, 0); noTint();
+
+  // cosmos-style bloom on the ESB ascii: bright twinkling cores wrapped in a soft,
+  // wide halo. Tinted white so the glow keeps the building's own prominent Knicks
+  // orange + blue (the halo glows orange where it's orange, blue where it's blue).
+  if (P.esbglow > 0) {
+    const pulse = 1 + 0.2 * Math.sin(2 * Math.PI * t * P.esbglowspeed * 0.5);   // gentle breathing
+    for (const [rad, wgt] of [[5, 1.1], [13, 0.85], [30, 0.6], [62, 0.42]]) {
+      esbGlow.clear(); esbGlow.push(); esbGlow.drawingContext.filter = `blur(${rad}px)`; esbGlow.image(esbBuf, 0, 0); esbGlow.pop();
+      tint(255, 255, 255, clamp(wgt * P.esbglow * pulse, 0, 1) * 255); image(esbGlow, 0, 0);
+    }
+    noTint();
+  }
 
   // 4) signal: spotlight + crest fade in/out, locked to the building's drift
   const sigstart = P.buildsecs + 0.30, te = t - sigstart;
@@ -483,6 +506,8 @@ function buildPanel() {
     ['logoglow', 0.5, 4, 0.1], ['rayglow', 0, 1.2, 0.02], ['aura', 0, 1.5, 0.02],
     ['rot', -40, 40, 1], ['recede', 0.2, 1, 0.02], ['tilt', 0.3, 1, 0.02],
     ['logox', 0.2, 0.9, 0.01], ['logoy', 0.1, 0.6, 0.01], ['logow', 120, 600, 10], ['fadeperiod', 0.8, 5, 0.1],
+    ['esbflicker', 0, 20, 1], ['esbflickamt', 0, 0.6, 0.02],
+    ['esbglow', 0, 2, 0.05], ['esbglowspeed', 0, 2, 0.05],
   ];
   for (const [key, mn, mx, st] of specs) {
     const lab = createElement('label'); lab.parent(panel);
