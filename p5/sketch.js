@@ -16,8 +16,16 @@ const SPIRE_BLUE = [95, 165, 255], SHAFT_BLUE = [48, 92, 245], KNICKS_ORANGE = [
 const GREEN = [30, 200, 70], GREEN_HEAD = [205, 255, 215], ELECTRIC = [90, 225, 255];
 const EDGE = [225, 240, 255], CYBER = [90, 205, 255];
 const LOGO_ORANGE = [255, 120, 12], LOGO_BLUE = [22, 110, 255], LOGO_GRAY = [195, 205, 222];
-const PROF_Y = [0, 0.17, 0.21, 0.34, 0.40, 0.50, 1.0];
-const PROF_W = [0.40, 0.40, 1.60, 2.40, 4.60, 5.0, 5.0];
+// Empire State Building half-width silhouette (yn: 0 = antenna tip .. 1 = base),
+// as a fraction of the base half-width. Captures the Art Deco massing: thin antenna,
+// tapered mast, the 86th-floor observation crown bulge, a waist, the tall shaft, then
+// the stepped setbacks down to the wide 5-storey podium. Detail comes from sampling
+// this (plus a faint window/floor facade) per cell, the same way the Knicks crest
+// samples its logo image.
+const ESB_EY = [0.00, 0.045, 0.075, 0.105, 0.130, 0.150, 0.165, 0.185, 0.205, 0.660, 0.700, 0.730, 0.800, 0.880, 0.920, 1.000];
+const ESB_EW = [0.015, 0.030, 0.075, 0.150, 0.230, 0.330, 0.300, 0.360, 0.500, 0.520, 0.560, 0.680, 0.760, 0.880, 0.960, 1.000];
+const ESB_HWCELL = 6.0;            // base half-width in cells (screen width = ESB_HWCELL * wscale)
+const ESB_MW = 200, ESB_MH = 900;  // silhouette mask resolution
 
 // ---------- tweakable params (same names/defaults as the CLI flags) ----------
 const P = {
@@ -27,7 +35,7 @@ const P = {
   noiseamt: 0.38, spark: 0.0045,
   glow: 1.1, glowradius: 15.0,
   buildsecs: 2.0, basey: 0.72, wscale: 0.60,
-  logow: 470, logocell: 10, logox: 0.65, logoy: 0.31, logoglow: 1.3,
+  logow: 520, logocell: 10, logox: 0.65, logoy: 0.24, logoglow: 1.3,
   tilt: 0.78, recede: 0.58, rot: 5.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
   aura: 0.55, rayglow: 0.4, originx: 0.52, originy: 0.66, rayreach: 0.55, conew: 0.62,
 };
@@ -38,6 +46,7 @@ let sampleBuf;                 // video downscaled to GW x GH for per-cell sampl
 let codeBuf, codeGlow, lightBuf, lightGlow, wgl;
 let radImg, auraImg;           // static spotlight + halo (screen space)
 let radMask;                   // scratch buffer: radiance clipped to a growing disc from origin
+let esbMask;                   // baked ESB silhouette + facade coverage field (Float32)
 let crestVariants = [];        // pre-warped crest images (glow baked in)
 // per-column / field randomness
 let randfield, randbin, rspeed, rtail, rperiod, rphase, ractive, noiseField;
@@ -49,10 +58,49 @@ let ready = false, started = false;
 function mulberry32(a) { return function () { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
 function hash3(x, y, z) { let h = (Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(z | 0, 2246822519)) | 0; h = Math.imul(h ^ h >>> 13, 1274126177); return ((h ^ h >>> 16) >>> 0) / 4294967296; }
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
-function interpProfile(yn) {
-  if (yn <= PROF_Y[0]) return PROF_W[0];
-  for (let i = 1; i < PROF_Y.length; i++) if (yn <= PROF_Y[i]) { const f = (yn - PROF_Y[i - 1]) / (PROF_Y[i] - PROF_Y[i - 1]); return PROF_W[i - 1] + f * (PROF_W[i] - PROF_W[i - 1]); }
-  return PROF_W[PROF_W.length - 1];
+
+// half-width of the ESB silhouette (fraction of base) at height yn (0 tip .. 1 base)
+function esbHalf(yn) {
+  yn = yn < 0 ? 0 : yn > 1 ? 1 : yn;
+  if (yn <= ESB_EY[0]) return ESB_EW[0];
+  for (let i = 1; i < ESB_EY.length; i++) if (yn <= ESB_EY[i]) { const f = (yn - ESB_EY[i - 1]) / (ESB_EY[i] - ESB_EY[i - 1]); return ESB_EW[i - 1] + f * (ESB_EW[i] - ESB_EW[i - 1]); }
+  return ESB_EW[ESB_EW.length - 1];
+}
+
+// bake the detailed ESB silhouette + a faint window/floor facade into a coverage field
+function buildESBMask() {
+  const g = createGraphics(ESB_MW, ESB_MH);
+  g.pixelDensity(1); g.clear(); g.noStroke(); g.fill(255);
+  const cx = ESB_MW / 2;
+  for (let y = 0; y < ESB_MH; y++) {
+    const hw = esbHalf(y / (ESB_MH - 1)) * (ESB_MW * 0.5);
+    g.rect(cx - hw, y, hw * 2, 1);          // anti-aliased silhouette bar per row
+  }
+  g.loadPixels();
+  esbMask = new Float32Array(ESB_MW * ESB_MH);
+  for (let y = 0; y < ESB_MH; y++) for (let x = 0; x < ESB_MW; x++) {
+    let v = g.pixels[(y * ESB_MW + x) * 4 + 3] / 255;   // alpha coverage of the silhouette
+    if (v > 0.02) {
+      const yn = y / (ESB_MH - 1), xn = (x - cx) / (ESB_MW * 0.5);
+      const floors = 0.90 + 0.10 * Math.cos(yn * 150);  // horizontal floor striations
+      const bays = 0.86 + 0.14 * Math.cos(xn * 27);      // vertical window mullions
+      v *= floors * bays;
+    }
+    esbMask[y * ESB_MW + x] = v;
+  }
+  g.remove();
+}
+
+// sample the baked ESB field; xn in [-1,1] across the base half-width, yn 0..1 tip->base
+function sampleESB(yn, xn) {
+  if (xn < -1.04 || xn > 1.04) return 0;
+  const fx = (xn * 0.5 + 0.5) * (ESB_MW - 1), fy = clamp(yn, 0, 1) * (ESB_MH - 1);
+  let x0 = Math.floor(fx), y0 = Math.floor(fy);
+  if (x0 < 0) x0 = 0; if (x0 > ESB_MW - 2) x0 = ESB_MW - 2;
+  if (y0 < 0) y0 = 0; if (y0 > ESB_MH - 2) y0 = ESB_MH - 2;
+  const tx = fx - x0, ty = fy - y0, i0 = y0 * ESB_MW + x0, i1 = i0 + ESB_MW;
+  const a = esbMask[i0], b = esbMask[i0 + 1], c = esbMask[i1], d = esbMask[i1 + 1];
+  return (a * (1 - tx) + b * tx) * (1 - ty) + (c * (1 - tx) + d * tx) * ty;
 }
 
 function preload() {
@@ -81,6 +129,7 @@ function setup() {
   wgl = createGraphics(W, H, WEBGL); wgl.textureMode(NORMAL); wgl.noStroke();
 
   buildFields();
+  buildESBMask();
   buildCrestCells();
   rebuildSignal();   // crest variants + aura + radiance
   buildPanel();
@@ -304,14 +353,15 @@ function draw() {
       else if (rainb > 0.04 && hsel > 0.996) { cr0 = SPIRE_BLUE[0]; cg0 = SPIRE_BLUE[1]; cb0 = SPIRE_BLUE[2]; I = Math.max(I, 0.9); }
       // electric sparks
       if (I > 0.03 && hash3(5000 + etick, r, c) < P.spark) { cr0 = ELECTRIC[0]; cg0 = ELECTRIC[1]; cb0 = ELECTRIC[2]; I = Math.max(I, 1.15); }
-      // ESB
+      // ESB — sampled from the detailed Art Deco silhouette + facade mask
       const yn = (r - tip) / BH;
       if (yn >= 0 && yn <= 1 && yn <= front) {
-        const hw = interpProfile(yn) * P.wscale;
-        if (Math.abs(c + 0.5 - center) <= hw) {
+        const xn = (c + 0.5 - center) / Math.max(ESB_HWCELL * P.wscale, 0.001);
+        const cov = sampleESB(yn, xn);
+        if (cov > 0.06) {
           const shimmer = 0.80 + 0.20 * Math.sin(2 * Math.PI * (t * 1.4) - yn * 6 + c * 0.25);
           const edge = front < 1 ? clamp(1 - Math.abs(yn - front) / 0.05, 0, 1) : 0;
-          let Ib = clamp(0.95 * shimmer + 0.6 * edge, 0, 1.3);
+          let Ib = clamp((0.95 * shimmer + 0.6 * edge) * cov, 0, 1.3);
           // bands
           let bcol;
           if (yn >= 0.59) { const st = clamp((yn - 0.59) / 0.41, 0, 1); bcol = [SHAFT_BLUE[0] * (1 - 0.6 * st), SHAFT_BLUE[1] * (1 - 0.6 * st), SHAFT_BLUE[2] * (1 - 0.6 * st)]; }
@@ -390,6 +440,29 @@ function draw() {
       tint(255, 255, 255, a); image(auraImg, dx, dy);
       const vk = (Math.floor(te * P.logoflicker) * 5) % crestVariants.length;
       image(crestVariants[vk], dx, dy); noTint();
+    }
+
+    // first-appearance ECHO: as the crest resolves it pings out a few expanding,
+    // fading copies of itself, like a ripple radiating from the emblem
+    const echoWindow = 1.8;                 // only during the very first appearance
+    if (te < echoWindow) {
+      const env = clamp(1 - te / echoWindow, 0, 1);
+      const NECHO = 3, echoDur = 0.9, stagger = 0.28, expand = 0.62;
+      const img = crestVariants[(Math.floor(te * P.logoflicker) * 5) % crestVariants.length];
+      const cxS = ecx + dx, cyS = ecy + dy;
+      for (let k = 0; k < NECHO; k++) {
+        const lt = te - k * stagger;
+        if (lt <= 0 || lt >= echoDur) continue;
+        const p = lt / echoDur;             // 0..1 expansion progress
+        const s = 1 + expand * p;           // scales outward from the crest centre
+        const ea = (1 - p) * (1 - p) * 0.55 * env * on;   // bright at birth, fades as it grows
+        if (ea < 0.01) continue;
+        push();
+        translate(cxS, cyS); scale(s); translate(-cxS, -cyS);
+        tint(255, 255, 255, clamp(ea, 0, 1) * 255); image(img, dx, dy);
+        pop();
+      }
+      noTint();
     }
   }
   blendMode(BLEND);
