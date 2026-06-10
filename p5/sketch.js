@@ -368,8 +368,8 @@ function draw() {
           let Ib = clamp((0.95 * shimmer + 0.6 * edge) * cov, 0, 1.3);
           // bands
           let bcol;
-          if (yn >= 0.59) { const st = clamp((yn - 0.59) / 0.41, 0, 1); bcol = [SHAFT_BLUE[0] * (1 - 0.6 * st), SHAFT_BLUE[1] * (1 - 0.6 * st), SHAFT_BLUE[2] * (1 - 0.6 * st)]; }
-          else if (yn >= 0.40) bcol = KNICKS_ORANGE.slice();
+          if (yn >= 0.42) { const st = clamp((yn - 0.42) / 0.58, 0, 1); bcol = [SHAFT_BLUE[0] * (1 - 0.6 * st), SHAFT_BLUE[1] * (1 - 0.6 * st), SHAFT_BLUE[2] * (1 - 0.6 * st)]; }
+          else if (yn >= 0.24) bcol = KNICKS_ORANGE.slice();
           else bcol = SPIRE_BLUE.slice();
           bcol = [bcol[0] * (1 - edge) + EDGE[0] * edge, bcol[1] * (1 - edge) + EDGE[1] * edge, bcol[2] * (1 - edge) + EDGE[2] * edge];
           if (built) { Ib *= beat; bcol = [bcol[0] * (1 - 0.5 * flash) + EDGE[0] * 0.5 * flash, bcol[1] * (1 - 0.5 * flash) + EDGE[1] * 0.5 * flash, bcol[2] * (1 - 0.5 * flash) + EDGE[2] * 0.5 * flash]; }
