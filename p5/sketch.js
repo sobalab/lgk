@@ -38,6 +38,7 @@ const P = {
   esbglow: 1.0, esbglowspeed: 0.5,
   logow: 520, logocell: 10, logox: 0.65, logoy: 0.24, logoglow: 1.3,
   tilt: 0.78, recede: 0.58, rot: 5.0, logovars: 8, logoflicker: 11.0, fadeperiod: 2.6,
+  dribble: 1.8, dribbleamt: 0.14,
   aura: 0.55, rayglow: 0.4, originx: 0.52, originy: 0.66, rayreach: 0.55, conew: 0.62,
 };
 
@@ -136,7 +137,47 @@ function setup() {
   buildCrestCells();
   rebuildSignal();   // crest variants + aura + radiance
   buildPanel();
+  buildRecorder();
   ready = true;
+}
+
+// ---------- record the live canvas to a downloadable video (one full loop) ----------
+let recBtn, mediaRec, recChunks = [], recTimer = null;
+function buildRecorder() {
+  recBtn = createButton('● REC');
+  recBtn.parent('holder');
+  recBtn.style('position', 'fixed'); recBtn.style('top', '8px'); recBtn.style('right', '8px');
+  recBtn.style('z-index', '20'); recBtn.style('background', '#1a0e12cc'); recBtn.style('color', '#f88');
+  recBtn.style('border', '1px solid #5a2630'); recBtn.style('border-radius', '8px');
+  recBtn.style('padding', '6px 12px'); recBtn.style('font', '12px Menlo, monospace');
+  recBtn.style('cursor', 'pointer'); recBtn.style('backdrop-filter', 'blur(4px)');
+  recBtn.mousePressed(toggleRecord);
+}
+function toggleRecord() {
+  if (mediaRec && mediaRec.state === 'recording') { mediaRec.stop(); return; }
+  const canvas = document.querySelector('#holder canvas');
+  if (!canvas || !window.MediaRecorder) { alert('Recording not supported in this browser.'); return; }
+  const mime = ['video/mp4;codecs=avc1', 'video/webm;codecs=vp9', 'video/webm']
+    .find(m => MediaRecorder.isTypeSupported(m)) || 'video/webm';
+  const stream = canvas.captureStream(30);
+  recChunks = [];
+  mediaRec = new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 16e6 });
+  mediaRec.ondataavailable = e => { if (e.data && e.data.size) recChunks.push(e.data); };
+  mediaRec.onstop = () => {
+    clearTimeout(recTimer);
+    const blob = new Blob(recChunks, { type: mime });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'lgk.' + (mime.startsWith('video/mp4') ? 'mp4' : 'webm');
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    recBtn.html('● REC'); recBtn.style('color', '#f88');
+  };
+  // sync to the loop start, capture exactly one full loop, then auto-stop
+  try { video.elt.currentTime = 0; video.elt.play().catch(() => { }); } catch (e) { }
+  mediaRec.start();
+  recBtn.html('■ STOP'); recBtn.style('color', '#fff');
+  const durMs = ((video.elt && video.elt.duration) || 5.1) * 1000 + 250;
+  recTimer = setTimeout(() => { if (mediaRec && mediaRec.state === 'recording') mediaRec.stop(); }, durMs);
 }
 
 // per-column rain params + scrolling random fields + perlin-ish noise grid
@@ -457,28 +498,35 @@ function draw() {
       ctx.fillStyle = gr; ctx.fillRect(0, 0, W, H); ctx.restore();
       tint(255, 255, 255, clamp(grow * swell, 0, 1) * 255); image(radMask, 0, 0); noTint();
     }
+    // DRIBBLE rhythm: the crest bounces — a sharp scale-pop on each beat that
+    // decays, like a basketball impact, and every bounce throws off an echo
+    const bp = te * P.dribble;                 // beats elapsed
+    const bf = bp - Math.floor(bp);            // 0..1 within the current bounce
+    const bounce = Math.exp(-bf * 4.5);        // sharp at impact, eases off
+    const dribScale = 1 + P.dribbleamt * bounce;  // crest grows on each bounce
+    const cxS = ecx + dx, cyS = ecy + dy;
+
     const fade = on * (0.5 - 0.5 * Math.cos(2 * Math.PI * te / P.fadeperiod));
     if (fade > 0.01) {
       const a = clamp(fade * breathe, 0, 1) * 255;
       tint(255, 255, 255, a); image(auraImg, dx, dy);
       const vk = (Math.floor(te * P.logoflicker) * 5) % crestVariants.length;
-      image(crestVariants[vk], dx, dy); noTint();
+      push(); translate(cxS, cyS); scale(dribScale); translate(-cxS, -cyS);
+      image(crestVariants[vk], dx, dy); pop(); noTint();
     }
 
-    // first-appearance ECHO: as the crest resolves it pings out a few expanding,
-    // fading copies of itself, like a ripple radiating from the emblem
-    const echoWindow = 1.8;                 // only during the very first appearance
-    if (te < echoWindow) {
-      const env = clamp(1 - te / echoWindow, 0, 1);
-      const NECHO = 3, echoDur = 0.9, stagger = 0.28, expand = 0.62;
+    // dribble ECHO: each bounce launches an expanding, fading copy of the crest,
+    // so a train of ripples pulses outward in time with the dribble
+    const echoVis = clamp(fade * 1.6, 0, 1) * on;
+    if (echoVis > 0.02 && P.dribbleamt > 0) {
       const img = crestVariants[(Math.floor(te * P.logoflicker) * 5) % crestVariants.length];
-      const cxS = ecx + dx, cyS = ecy + dy;
-      for (let k = 0; k < NECHO; k++) {
-        const lt = te - k * stagger;
-        if (lt <= 0 || lt >= echoDur) continue;
-        const p = lt / echoDur;             // 0..1 expansion progress
-        const s = 1 + expand * p;           // scales outward from the crest centre
-        const ea = (1 - p) * (1 - p) * 0.55 * env * on;   // bright at birth, fades as it grows
+      const lifeBeats = 1.6, expand = 0.8, strength = 0.6, nRings = 3;
+      for (let k = 0; k <= nRings; k++) {
+        const ageB = bp - (Math.floor(bp) - k);   // age of the echo born k bounces ago, in beats
+        if (ageB <= 0 || ageB > lifeBeats) continue;
+        const p = ageB / lifeBeats;                // 0..1 expansion progress
+        const s = 1 + expand * p;
+        const ea = (1 - p) * (1 - p) * strength * echoVis;
         if (ea < 0.01) continue;
         push();
         translate(cxS, cyS); scale(s); translate(-cxS, -cyS);
@@ -508,6 +556,7 @@ function buildPanel() {
     ['logox', 0.2, 0.9, 0.01], ['logoy', 0.1, 0.6, 0.01], ['logow', 120, 600, 10], ['fadeperiod', 0.8, 5, 0.1],
     ['esbflicker', 0, 20, 1], ['esbflickamt', 0, 0.6, 0.02],
     ['esbglow', 0, 2, 0.05], ['esbglowspeed', 0, 2, 0.05],
+    ['dribble', 0, 4, 0.1], ['dribbleamt', 0, 0.4, 0.02],
   ];
   for (const [key, mn, mx, st] of specs) {
     const lab = createElement('label'); lab.parent(panel);
